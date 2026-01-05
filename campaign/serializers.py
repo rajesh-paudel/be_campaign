@@ -9,7 +9,6 @@ import sys
 
 class CampaignRecipientSerializer(serializers.ModelSerializer):
     full_name = serializers.ReadOnlyField()
-    person_id = serializers.UUIDField(source='person.id', read_only=True)
     
     class Meta:
         model = CampaignRecipient
@@ -100,7 +99,8 @@ class CampaignDetailSerializer(serializers.ModelSerializer):
     
     def get_recipient_person_ids(self, obj):
         """Return list of person IDs that are recipients of this campaign"""
-        return list(obj.recipients.filter(person__isnull=False).values_list('person_id', flat=True))
+        return list(obj.recipients.values_list('person_id', flat=True))
+
     
     def get_group_ids(self, obj):
         """Return list of group IDs (deprecated - system uses tags for recipient selection)"""
@@ -224,33 +224,18 @@ class CampaignCreateSerializer(serializers.ModelSerializer):
     def _add_recipients_from_person_ids(self, campaign, person_ids):
         if not person_ids:
             return
-        people = People.objects.filter(id__in=person_ids, user=campaign.user)
-        for person in people:
+        for pid in person_ids:
             CampaignRecipient.objects.create(
                 campaign=campaign,
-                person=person,
-                email=person.email,
-                first_name=person.first_name,
-                last_name=person.last_name,
-                phone=person.phone,
+                person_id=pid,   
+                email='',        
+                first_name='',
+                last_name='',
+                phone='',
                 status='pending'
             )
     
-    def _add_recipients_from_tags(self, campaign, tag_ids):
-        if not tag_ids:
-            return
-        people = People.objects.filter(tags__id__in=tag_ids, user=campaign.user).distinct()
-        for person in people:
-            if not CampaignRecipient.objects.filter(campaign=campaign, person=person).exists():
-                CampaignRecipient.objects.create(
-                    campaign=campaign,
-                    person=person,
-                    email=person.email,
-                    first_name=person.first_name,
-                    last_name=person.last_name,
-                    phone=person.phone,
-                    status='pending'
-                )
+   
     
     def update(self, instance, validated_data):
         recipient_person_ids = validated_data.pop('recipient_person_ids', None)

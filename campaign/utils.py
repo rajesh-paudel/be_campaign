@@ -5,6 +5,7 @@ import re
 from typing import Dict, List, Optional, Tuple
 from html import escape
 from django.core.signing import TimestampSigner
+import requests
 
 
 class SubjectLinePlaceholderHandler:
@@ -388,3 +389,19 @@ def generate_footer_html(footer_settings) -> str:
 </div>'''
     
     return footer_html
+
+
+BE_CRM_API="http://127.0.0.1/8000/api/accounts/validate-token/"
+def validate_token(token: str):
+    """
+    Validates the token by calling old backend.
+    Returns user info dict if valid, else None.
+    """
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        response = requests.get(BE_CRM_API, headers=headers, timeout=5)
+        if response.status_code != 200:
+            return None
+        return response.json()  # expects {"id": 123, }
+    except requests.RequestException:
+        return None

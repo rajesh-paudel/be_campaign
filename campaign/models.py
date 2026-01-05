@@ -182,7 +182,7 @@ class CampaignRecipient(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     
     class Meta:
-        unique_together = ['campaign', 'person']
+       
         ordering = ['-created_at']
         verbose_name = 'Campaign Recipient'
         verbose_name_plural = 'Campaign Recipients'

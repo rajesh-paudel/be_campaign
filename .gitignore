@@ -11,6 +11,7 @@ db.sqlite3
 staticfiles/
 __pycache__/
 *.py[cod]
+*.pyc
 *$py.class
 
 # Logs
