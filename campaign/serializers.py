@@ -69,7 +69,7 @@ class CampaignDetailSerializer(serializers.ModelSerializer):
     delivery_rate = serializers.ReadOnlyField()
     can_launch = serializers.ReadOnlyField()
     can_edit = serializers.ReadOnlyField()
-    user_id = serializers.UUIDField(source='user', read_only=True)
+    user_email = serializers.EmailField(read_only=True)
     recipient_person_ids = serializers.SerializerMethodField()
     group_ids = serializers.SerializerMethodField()
     current_recipients = serializers.SerializerMethodField()
@@ -85,7 +85,7 @@ class CampaignDetailSerializer(serializers.ModelSerializer):
             'scheduled_at', 'launched_at', 'completed_at', 'total_recipients',
             'emails_sent', 'emails_delivered', 'emails_opened', 'emails_clicked',
             'emails_bounced', 'emails_failed', 'recipients', 'recipient_count',
-            'open_rate', 'click_rate', 'delivery_rate', 'can_launch', 'can_edit', 'user_id',
+            'open_rate', 'click_rate', 'delivery_rate', 'can_launch', 'can_edit', 'user_email',
             'recipient_person_ids', 'group_ids', 'current_recipients',
             'tag_ids', 'design_started', 'design_source',
             'attachments',
@@ -215,7 +215,7 @@ class CampaignCreateSerializer(serializers.ModelSerializer):
         if tag_ids:
             campaign.tags.set(tag_ids)
         self._add_recipients_from_person_ids(campaign, recipient_person_ids)
-        self._add_recipients_from_tags(campaign, tag_ids)
+        # self._add_recipients_from_tags(campaign, tag_ids)
         # Update total_recipients
         campaign.total_recipients = campaign.recipients.count()
         campaign.save()

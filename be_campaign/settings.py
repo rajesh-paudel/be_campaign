@@ -14,6 +14,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 from pathlib import Path
 import os
 from dotenv import load_dotenv
+from corsheaders.defaults import default_headers
 load_dotenv()
 
 USE_SPACES = os.getenv("USE_SPACES") == "TRUE"
@@ -58,8 +59,9 @@ INSTALLED_APPS = [
 
 CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0")
 
-CRM_API_URL = os.getenv("CRM_API_URL")
+
 CRM_API_TOKEN = os.getenv("CRM_API_TOKEN")
+BE_CRM_API = os.getenv("BE_CRM_API")
 
 MAILGUN_API_KEY = os.getenv("MAILGUN_API_KEY")
 MAILGUN_DOMAIN = os.getenv("MAILGUN_DOMAIN")
@@ -80,6 +82,10 @@ ROOT_URLCONF = 'be_campaign.urls'
 CSRF_ALLOW_ALL_ORIGINS = True
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
+]
+
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    "x-user-id",
 ]
 
 TEMPLATES = [

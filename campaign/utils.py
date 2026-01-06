@@ -6,7 +6,7 @@ from typing import Dict, List, Optional, Tuple
 from html import escape
 from django.core.signing import TimestampSigner
 import requests
-
+from django.conf import settings
 
 class SubjectLinePlaceholderHandler:
     """
@@ -391,17 +391,22 @@ def generate_footer_html(footer_settings) -> str:
     return footer_html
 
 
-BE_CRM_API="http://127.0.0.1/8000/api/accounts/validate-token/"
 def validate_token(token: str):
     """
-    Validates the token by calling old backend.
+    Call old backend to validate token.
     Returns user info dict if valid, else None.
     """
+    url = f"{settings.BE_CRM_API}accounts/validate-token/"
     headers = {"Authorization": f"Bearer {token}"}
     try:
-        response = requests.get(BE_CRM_API, headers=headers, timeout=5)
-        if response.status_code != 200:
-            return None
-        return response.json()  # expects {"id": 123, }
-    except requests.RequestException:
+        response = requests.get(url, headers=headers, timeout=5)
+        response.raise_for_status()  # raises HTTPError for 4xx/5xx
+        data = response.json()
+        # optionally check required fields
+        if "id" in data:
+            return data
+        return None
+    except (requests.RequestException, ValueError) as e:
+        # ValueError for invalid JSON
+        print(f"Token validation failed: {e}")
         return None

@@ -25,7 +25,7 @@ class Campaign(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
     # External references (CRM-owned)
-    user =models.UUIDField(db_index=True)
+    user_email =models.EmailField()
     organization = models.UUIDField(null=True, blank=True, db_index=True)
     
     # Campaign Details

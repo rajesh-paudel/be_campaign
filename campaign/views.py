@@ -56,6 +56,8 @@ class CampaignViewSet(ModelViewSet):
    
     pagination_class = CampaignListPagination
     
+
+    # for validating user by taking token passing to crm and getting user info back
     def initial(self, request, *args, **kwargs):
         """
         Called before any action.
@@ -69,24 +71,20 @@ class CampaignViewSet(ModelViewSet):
 
         token = auth_header.split("Bearer ")[1]
         user_info = validate_token(token)
-
+      
         if not user_info:
             raise AuthenticationFailed("Invalid or expired token")
-
-        # Fake user object so request.user works in the rest of the ViewSet
-        class FakeUser:
-            def __init__(self, user_id):
-                self.id = user_id
-                
-        request.user = FakeUser(user_info["id"])
+        
+        request.user_id = user_info["id"]
+        request.user_email = user_info.get("email")
 
     def get_object_or_404(self):
         return get_object_or_404(Campaign, pk=self.kwargs["pk"], user=self.request.user)
     
-    # def get_queryset(self):
-    #     return Campaign.objects.filter(user=self.request.user).select_related('user').prefetch_related('tags').annotate(
-    #         annotated_recipient_count=Count('recipients')
-    #     ).order_by('-created_at')
+    def get_queryset(self):
+        return Campaign.objects.filter(user_email=self.request.user_email)\
+            .annotate(annotated_recipient_count=Count('recipients'))\
+            .order_by('-created_at')
     
     def get_serializer_class(self):
         if self.action == 'list':
@@ -141,9 +139,9 @@ class CampaignViewSet(ModelViewSet):
     def unsubscribe_link(self, request, pk=None):
         """Return a signed unsubscribe link for a sample email (for preview/testing)."""
         campaign = self.get_object_or_404()
-        email = request.query_params.get('email') or request.user.email
+        email = request.query_params.get('email') or self.request.user_email
         signer = TimestampSigner()
-        token = signer.sign(f"{campaign.user_id}:{email}")
+        token = signer.sign(f"{campaign.user_email}:{email}")
         # Default to salesmonk.ca frontend unsubscribe page
         fe_base = getattr(settings, 'FRONTEND_BASE_URL', 'https://salesmonk.ca').rstrip('/')
         url = f"{fe_base}/unsubscribe?t={token}"
@@ -151,7 +149,7 @@ class CampaignViewSet(ModelViewSet):
     
     def perform_create(self, serializer):
         serializer.save(
-            user=self.request.user,
+            user_email=self.request.user_email,
             attachments=self.request.data.get('attachments', []),
             components=self.request.data.get('components', None),
         )
