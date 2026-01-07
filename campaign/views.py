@@ -33,7 +33,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
 from django.db import transaction
 from .models import CampaignMessage
-
+from .tasks import send_campaign_task
 from django.core.signing import TimestampSigner, BadSignature, SignatureExpired
 
 # Set up logging
@@ -79,7 +79,7 @@ class CampaignViewSet(ModelViewSet):
         request.user_email = user_info.get("email")
 
     def get_object_or_404(self):
-        return get_object_or_404(Campaign, pk=self.kwargs["pk"], user=self.request.user)
+        return get_object_or_404(Campaign, pk=self.kwargs["pk"], user_email=self.request.user_email)
     
     def get_queryset(self):
         return Campaign.objects.filter(user_email=self.request.user_email)\
@@ -160,125 +160,126 @@ class CampaignViewSet(ModelViewSet):
             raise serializers.ValidationError(
                 f"Cannot edit campaign in '{instance.status}' status. Only draft, paused, and cancelled campaigns can be edited."
             )
+         
         serializer.save(
             attachments=self.request.data.get('attachments', []),
             components=self.request.data.get('components', None),
         )
     
     
-    # @action(detail=True, methods=['post'])
-    # def launch(self, request, pk=None):
-    #     """Launch a campaign immediately or schedule it"""
-    #     campaign = self.get_object_or_404()
+    @action(detail=True, methods=['post'])
+    def launch(self, request, pk=None):
+        """Launch a campaign immediately or schedule it"""
+        campaign = self.get_object_or_404()
         
-    #     # Validate serializer
-    #     serializer = CampaignLaunchSerializer(data=request.data)
-    #     if not serializer.is_valid():
-    #         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        # Validate serializer
+        serializer = CampaignLaunchSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         
-    #     # Check if campaign can be launched
-    #     if not campaign.can_launch():
-    #         return Response(
-    #             {'error': 'Campaign cannot be launched. Check status and ensure subject is set.'},
-    #             status=status.HTTP_400_BAD_REQUEST
-    #         )
+        # Check if campaign can be launched
+        if not campaign.can_launch():
+            return Response(
+                {'error': 'Campaign cannot be launched. Check status and ensure subject is set.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
         
-    #     # Validate campaign has required content
-    #     if not campaign.subject or not campaign.subject.strip():
-    #         return Response(
-    #             {'error': 'Campaign must have a subject line.'},
-    #             status=status.HTTP_400_BAD_REQUEST
-    #         )
+        # Validate campaign has required content
+        if not campaign.subject or not campaign.subject.strip():
+            return Response(
+                {'error': 'Campaign must have a subject line.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
         
-    #     # Check if campaign has content (either message HTML or components)
-    #     has_message = campaign.message and campaign.message.strip()
-    #     has_components = campaign.components and isinstance(campaign.components, list) and len(campaign.components) > 0
+        # Check if campaign has content (either message HTML or components)
+        has_message = campaign.message and campaign.message.strip()
+        has_components = campaign.components and isinstance(campaign.components, list) and len(campaign.components) > 0
         
-    #     if not has_message and not has_components:
-    #         return Response(
-    #             {'error': 'Campaign must have message content or components.'},
-    #             status=status.HTTP_400_BAD_REQUEST
-    #         )
+        if not has_message and not has_components:
+            return Response(
+                {'error': 'Campaign must have message content or components.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
         
-    #     validated_data = serializer.validated_data
+        validated_data = serializer.validated_data
         
-    #     # Rebuild recipients from tags every launch
-    #     # tag_ids = list(campaign.tags.values_list('id', flat=True))
-    #     # if tag_ids:
-    #     #     from activity.models import People
-    #     #     tagged_people = People.objects.filter(user=campaign.user, tags__id__in=tag_ids).distinct()
-    #     #     for person in tagged_people:
-    #     #         # Skip if person has no email
-    #     #         if not person.email or not person.email.strip():
-    #     #             continue
+        # Rebuild recipients from tags every launch
+        # tag_ids = list(campaign.tags.values_list('id', flat=True))
+        # if tag_ids:
+        #     from activity.models import People
+        #     tagged_people = People.objects.filter(user=campaign.user, tags__id__in=tag_ids).distinct()
+        #     for person in tagged_people:
+        #         # Skip if person has no email
+        #         if not person.email or not person.email.strip():
+        #             continue
                     
-    #     #         if not CampaignRecipient.objects.filter(campaign=campaign, person=person).exists():
-    #     #             CampaignRecipient.objects.create(
-    #     #                 campaign=campaign,
-    #     #                 person=person,
-    #     #                 email=person.email,
-    #     #                 first_name=person.first_name or '',
-    #     #                 last_name=person.last_name or '',
-    #     #                 phone=person.phone or '',
-    #     #                 status='pending'
-    #     #             )
+        #         if not CampaignRecipient.objects.filter(campaign=campaign, person=person).exists():
+        #             CampaignRecipient.objects.create(
+        #                 campaign=campaign,
+        #                 person=person,
+        #                 email=person.email,
+        #                 first_name=person.first_name or '',
+        #                 last_name=person.last_name or '',
+        #                 phone=person.phone or '',
+        #                 status='pending'
+        #             )
 
-    #     # Check if we have any recipients after rebuilding
-    #     recipient_count = campaign.recipients.count()
-    #     if recipient_count == 0:
-    #         return Response(
-    #             {'error': 'Campaign has no recipients. Please add tags or recipients before launching.'},
-    #             status=status.HTTP_400_BAD_REQUEST
-    #         )
+        # Check if we have any recipients after rebuilding
+        recipient_count = campaign.recipients.count()
+        if recipient_count == 0:
+            return Response(
+                {'error': 'Campaign has no recipients. Please add tags or recipients before launching.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-    #     # Always reset recipients to pending before sending
-    #     campaign.recipients.all().update(status='pending', email_sent_at=None)
+        # Always reset recipients to pending before sending
+        campaign.recipients.all().update(status='pending', email_sent_at=None)
 
-    #     # Reset campaign counters so re-send is clean
-    #     campaign.emails_sent = 0
-    #     campaign.emails_failed = 0
-    #     campaign.emails_delivered = 0
-    #     campaign.emails_opened = 0
-    #     campaign.emails_clicked = 0
-    #     campaign.emails_bounced = 0
-    #     campaign.launched_at = None
-    #     campaign.completed_at = None
-    #     campaign.total_recipients = recipient_count
-    #     campaign.save()
+        # Reset campaign counters so re-send is clean
+        campaign.emails_sent = 0
+        campaign.emails_failed = 0
+        campaign.emails_delivered = 0
+        campaign.emails_opened = 0
+        campaign.emails_clicked = 0
+        campaign.emails_bounced = 0
+        campaign.launched_at = None
+        campaign.completed_at = None
+        campaign.total_recipients = recipient_count
+        campaign.save()
 
-    #     # ===== PERFORMANCE: Generate and cache HTML once before sending =====
-    #     try:
-    #         logger.info(f"Campaign {campaign.id}: Generating and caching HTML before launch")
-    #         campaign.generate_and_cache_html()
-    #         logger.info(f"Campaign {campaign.id}: HTML cached successfully")
-    #     except Exception as e:
-    #         logger.error(f"Campaign {campaign.id}: Failed to cache HTML: {str(e)}")
-    #         # Continue anyway - task will handle fallback
-    #     # ===== END PERFORMANCE OPTIMIZATION =====
+        # ===== PERFORMANCE: Generate and cache HTML once before sending =====
+        try:
+            logger.info(f"Campaign {campaign.id}: Generating and caching HTML before launch")
+            campaign.generate_and_cache_html()
+            logger.info(f"Campaign {campaign.id}: HTML cached successfully")
+        except Exception as e:
+            logger.error(f"Campaign {campaign.id}: Failed to cache HTML: {str(e)}")
+            # Continue anyway - task will handle fallback
+        # ===== END PERFORMANCE OPTIMIZATION =====
 
-    #     if validated_data.get('send_immediately', True):
-    #         # Enqueue immediate send via Celery
-    #         campaign.status = 'sending'
-    #         campaign.launched_at = timezone.now()
-    #         campaign.save(update_fields=['status', 'launched_at', 'updated_at'])
-    #         send_campaign_task.delay(str(campaign.id))
-    #         return Response({
-    #             'campaign_id': str(campaign.id),
-    #             'status': campaign.status,
-    #             'message': 'Campaign enqueued for sending'
-    #         })
-    #     else:
-    #         # Schedule via Celery ETA
-    #         scheduled_at = validated_data['scheduled_at']
-    #         campaign.scheduled_at = scheduled_at
-    #         campaign.status = 'scheduled'
-    #         campaign.save(update_fields=['scheduled_at', 'status', 'updated_at'])
-    #         send_campaign_task.apply_async(args=[str(campaign.id)], eta=scheduled_at)
-    #         return Response({
-    #             'message': 'Campaign scheduled successfully',
-    #             'scheduled_at': scheduled_at,
-    #             'campaign_id': str(campaign.id)
-    #         })
+        if validated_data.get('send_immediately', True):
+            # Enqueue immediate send via Celery
+            campaign.status = 'sending'
+            campaign.launched_at = timezone.now()
+            campaign.save(update_fields=['status', 'launched_at', 'updated_at'])
+            send_campaign_task.delay(str(campaign.id))
+            return Response({
+                'campaign_id': str(campaign.id),
+                'status': campaign.status,
+                'message': 'Campaign enqueued for sending'
+            })
+        else:
+            # Schedule via Celery ETA
+            scheduled_at = validated_data['scheduled_at']
+            campaign.scheduled_at = scheduled_at
+            campaign.status = 'scheduled'
+            campaign.save(update_fields=['scheduled_at', 'status', 'updated_at'])
+            send_campaign_task.apply_async(args=[str(campaign.id)], eta=scheduled_at)
+            return Response({
+                'message': 'Campaign scheduled successfully',
+                'scheduled_at': scheduled_at,
+                'campaign_id': str(campaign.id)
+            })
     
     @action(detail=False, methods=['get'])
     def subject_placeholders(self, request):
@@ -664,78 +665,122 @@ class CampaignRecipientViewSet(ModelViewSet):
 class CampaignImageViewSet(ModelViewSet):
     """Upload or list reusable campaign images. Accepts file or source_url."""
     serializer_class = CampaignImageSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = []
+    
+      # for validating user by taking token passing to crm and getting user info back
+    def initial(self, request, *args, **kwargs):
+        """
+        Called before any action.
+        Validate the token using the existing utils.validate_token function.
+        """
+        super().initial(request, *args, **kwargs)
+
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            raise AuthenticationFailed("Authorization token required")
+
+        token = auth_header.split("Bearer ")[1]
+        user_info = validate_token(token)
+      
+        if not user_info:
+            raise AuthenticationFailed("Invalid or expired token")
+        
+        request.user_id = user_info["id"]
+        request.user_email = user_info.get("email")
+
+
 
     def get_queryset(self):
-        return CampaignImage.objects.filter(user=self.request.user).order_by('-created_at')
+        return CampaignImage.objects.filter(user_email=self.request.user_email).order_by('-created_at')
 
     def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
+        serializer.save(user_email=self.request.user_email)
 
 
 class UserEmailFooterSettingsView(generics.RetrieveUpdateAPIView):
     """View for user email footer settings - get or update current user's footer"""
     serializer_class = UserEmailFooterSettingsSerializer
-    permission_classes = [permissions.IsAuthenticated]
-    
+    permission_classes = []
+      # for validating user by taking token passing to crm and getting user info back
+    def initial(self, request, *args, **kwargs):
+        """
+        Called before any action.
+        Validate the token using the existing utils.validate_token function.
+        """
+        super().initial(request, *args, **kwargs)
+
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            raise AuthenticationFailed("Authorization token required")
+
+        token = auth_header.split("Bearer ")[1]
+        user_info = validate_token(token)
+      
+        if not user_info:
+            raise AuthenticationFailed("Invalid or expired token")
+        
+        request.user_id = user_info["id"]
+        request.user_email = user_info.get("email")
+
+
     def get_object(self):
         """Get or create footer settings for the current user"""
         footer_settings, created = UserEmailFooterSettings.objects.get_or_create(
-            user=self.request.user
+            user_email=self.request.user_email
         )
         return footer_settings
 
 
-class DebugView(generics.GenericAPIView):
-    """Debug endpoint to check data"""
-    permission_classes = []  # Allow access without authentication for debugging
+# class DebugView(generics.GenericAPIView):
+#     """Debug endpoint to check data"""
+#     permission_classes = []  # Allow access without authentication for debugging
     
-    def get(self, request):
-        # Check Resend API configuration
-        resend_configured = bool(RESEND_API_KEY)
+#     def get(self, request):
+#         # Check Resend API configuration
+#         resend_configured = bool(RESEND_API_KEY)
         
-        # Basic system info
-        debug_info = {
-            'resend_configured': resend_configured,
-            'resend_from_email': RESEND_FROM_EMAIL,
-            'django_debug': settings.DEBUG,
-            'system_status': 'OK'
-        }
+#         # Basic system info
+#         debug_info = {
+#             'resend_configured': resend_configured,
+#             'resend_from_email': RESEND_FROM_EMAIL,
+#             'django_debug': settings.DEBUG,
+#             'system_status': 'OK'
+#         }
         
-        # If user is authenticated, provide user-specific debug info
-        if request.user and request.user.is_authenticated:
-            user = request.user
+#         # If user is authenticated, provide user-specific debug info
+#         if request.user and request.user.is_authenticated:
+#             user = request.user
             
-            # Count people
-            people_count = People.objects.filter(user=user).count()
-            people_with_email = People.objects.filter(user=user).exclude(
-                email__isnull=True
-            ).exclude(email='').count()
+#             # Count people
+#             people_count = People.objects.filter(user=user).count()
+#             people_with_email = People.objects.filter(user=user).exclude(
+#                 email__isnull=True
+#             ).exclude(email='').count()
             
-            # Count campaigns
-            campaigns_count = Campaign.objects.filter(user=user).count()
+#             # Count campaigns
+#             campaigns_count = Campaign.objects.filter(user=user).count()
             
-            # Sample people
-            sample_people = People.objects.filter(user=user).exclude(
-                email__isnull=True
-            ).exclude(email='')[:5].values('id', 'first_name', 'last_name', 'email')
+#             # Sample people
+#             sample_people = People.objects.filter(user=user).exclude(
+#                 email__isnull=True
+#             ).exclude(email='')[:5].values('id', 'first_name', 'last_name', 'email')
             
-            debug_info.update({
-                'user_id': user.id,
-                'user_email': user.email,
-                'counts': {
-                    'people': people_count,
-                    'people_with_email': people_with_email,
-                    'campaigns': campaigns_count,
-                },
-                'samples': {
-                    'people': list(sample_people),
-                }
-            })
-        else:
-            debug_info.update({
-                'user_status': 'Not authenticated',
-                'note': 'Authenticate to see user-specific debug info'
-            })
+#             debug_info.update({
+#                 'user_id': user.id,
+#                 'user_email': user.email,
+#                 'counts': {
+#                     'people': people_count,
+#                     'people_with_email': people_with_email,
+#                     'campaigns': campaigns_count,
+#                 },
+#                 'samples': {
+#                     'people': list(sample_people),
+#                 }
+#             })
+#         else:
+#             debug_info.update({
+#                 'user_status': 'Not authenticated',
+#                 'note': 'Authenticate to see user-specific debug info'
+#             })
         
-        return Response(debug_info)
+#         return Response(debug_info)

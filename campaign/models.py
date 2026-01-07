@@ -24,7 +24,7 @@ class Campaign(models.Model):
     
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
-    # External references (CRM-owned)
+    
     user_email =models.EmailField()
     organization = models.UUIDField(null=True, blank=True, db_index=True)
     
@@ -118,13 +118,13 @@ class Campaign(models.Model):
         from .models import UserEmailFooterSettings
         
         # Get footer settings once
-        footer_settings = UserEmailFooterSettings.objects.filter(user=self.user).first()
+        footer_settings = UserEmailFooterSettings.objects.filter(user_email=self.user_email).first()
         
         # Generate base HTML from components
         if self.components and isinstance(self.components, list) and len(self.components) > 0:
             # Ensure subject is a string (handle None case)
             campaign_subject = str(self.subject) if self.subject else None
-            html = generate_full_email_html(self.components, self.user, footer_settings, campaign_subject)
+            html = generate_full_email_html(self.components, self.user_email, footer_settings, campaign_subject)
         else:
             # Fallback to message field if no components
             html = self.message or ''
@@ -154,8 +154,8 @@ class CampaignRecipient(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     campaign = models.ForeignKey(Campaign, on_delete=models.CASCADE, related_name='recipients')
 
-    # External references (CRM-owned)
-    person_id = models.UUIDField(db_index=True)  # ID of the person in old CRM
+    # refer to the added peoples by using thier email field in model
+    person_email = models.EmailField() 
     
     # Contact details (snapshot at time of campaign)
     email = models.EmailField()
@@ -244,8 +244,8 @@ class CampaignImage(models.Model):
     """
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     
-    # User reference (UUID from CRM)
-    user = models.UUIDField(db_index=True)
+    
+    user_email = models.EmailField()
     organization = models.UUIDField(null=True, blank=True, db_index=True)
 
     name = models.CharField(max_length=255, blank=True)
@@ -290,10 +290,8 @@ class CampaignImage(models.Model):
 class UserEmailFooterSettings(models.Model):
     """User-specific email footer settings that apply to all campaigns"""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-   
-   # User reference (UUID from CRM)
-    user = models.UUIDField(unique=True, db_index=True)
-    
+    user_email =models.EmailField()
+
     # Footer content
     custom_html = models.TextField(blank=True, default="")
     
@@ -324,7 +322,7 @@ class EmailUnsubscribe(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
    
     # User reference from CRM
-    user = models.UUIDField(db_index=True)
+    user_id = models.IntegerField(db_index=True, null=True, blank=True)
 
     email = models.EmailField(db_index=True)
     reason = models.CharField(max_length=255, blank=True, default="")

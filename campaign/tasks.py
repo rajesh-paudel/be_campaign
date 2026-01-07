@@ -43,7 +43,7 @@ def _build_html_for_recipient(campaign: Campaign, recipient: CampaignRecipient, 
     try:
         from django.core.signing import TimestampSigner
         signer = TimestampSigner()
-        token = signer.sign(f"{campaign.user_id}:{recipient.email}")
+        token = signer.sign(f"{campaign.user_email}:{recipient.email}")
         fe_base = getattr(settings, 'FRONTEND_BASE_URL', 'https://salesmonk.ca').rstrip('/')
         unsub_url = f"{fe_base}/unsubscribe?t={token}"
     except Exception:
@@ -73,7 +73,7 @@ def _build_params_for_batch(campaign: Campaign, recipients: List[CampaignRecipie
         List of email parameter dictionaries ready for Resend batch API
     """
     params: List[Dict] = []
-    sender_identity = format_sender_identity(campaign.user)
+    sender_identity = format_sender_identity(campaign.user_email)
     
     # Extract sender email for unsubscribe header
     sender_email = None
@@ -126,11 +126,11 @@ def _build_params_for_batch(campaign: Campaign, recipients: List[CampaignRecipie
             "to": [r.email.strip()],
             "subject": subject.strip() if subject else "Email Campaign",
             "html": html,
-            "reply_to": campaign.user.email if getattr(campaign.user, 'email', None) else None,
+            "reply_to": campaign.user_email if getattr(campaign.user, 'email', None) else None,
             "headers": {
                 "X-Campaign-ID": str(campaign.id),
                 "X-Recipient-ID": str(r.id),
-                "X-User-ID": str(campaign.user.id),
+                "X-User-ID": str(campaign.user_email),
                 "X-Campaign-Name": str(campaign.name) if campaign.name else "",
             }
         }

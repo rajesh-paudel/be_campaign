@@ -13,7 +13,7 @@ class CampaignRecipientSerializer(serializers.ModelSerializer):
     class Meta:
         model = CampaignRecipient
         fields = [
-            'id', 'person_id', 'email', 'first_name', 'last_name', 'phone',
+            'id', 'person_email', 'email', 'first_name', 'last_name', 'phone',
             'status', 'full_name', 'email_sent_at', 'email_delivered_at',
             'email_opened_at', 'email_clicked_at', 'email_bounced_at',
             'error_message', 'retry_count', 'created_at', 'updated_at'
@@ -70,7 +70,7 @@ class CampaignDetailSerializer(serializers.ModelSerializer):
     can_launch = serializers.ReadOnlyField()
     can_edit = serializers.ReadOnlyField()
     user_email = serializers.EmailField(read_only=True)
-    recipient_person_ids = serializers.SerializerMethodField()
+    recipient_person_emails = serializers.SerializerMethodField()
     group_ids = serializers.SerializerMethodField()
     current_recipients = serializers.SerializerMethodField()
     tag_ids = serializers.SerializerMethodField()
@@ -86,7 +86,7 @@ class CampaignDetailSerializer(serializers.ModelSerializer):
             'emails_sent', 'emails_delivered', 'emails_opened', 'emails_clicked',
             'emails_bounced', 'emails_failed', 'recipients', 'recipient_count',
             'open_rate', 'click_rate', 'delivery_rate', 'can_launch', 'can_edit', 'user_email',
-            'recipient_person_ids', 'group_ids', 'current_recipients',
+            'recipient_person_emails', 'group_ids', 'current_recipients',
             'tag_ids', 'design_started', 'design_source',
             'attachments',
             'created_at', 'updated_at'
@@ -98,8 +98,8 @@ class CampaignDetailSerializer(serializers.ModelSerializer):
         ]
     
     def get_recipient_person_ids(self, obj):
-        """Return list of person IDs that are recipients of this campaign"""
-        return list(obj.recipients.values_list('person_id', flat=True))
+        """Return list of person emails that are recipients of this campaign"""
+        return list(obj.recipients.filter(person_id__isnull=False).values_list('person_id', flat=True))
 
     
     def get_group_ids(self, obj):
@@ -350,11 +350,11 @@ class CampaignImageSerializer(serializers.ModelSerializer):
         return attrs
 
     def create(self, validated_data):
-        validated_data['user'] = self.context['request'].user.id
-        user = self.context['request'].user
-        if hasattr(user, 'primary_organization') and user.primary_organization:
-            validated_data['organization'] = user.primary_organization
-        return super().create(validated_data)
+        validated_data['user_email'] = self.context['request'].user_email
+        # user = self.context['request'].user
+        # if hasattr(user, 'primary_organization') and user.primary_organization:
+        #     validated_data['organization'] = user.primary_organization
+        # return super().create(validated_data)
 
     def get_url(self, obj):
         # Prefer explicit source_url
@@ -379,7 +379,7 @@ class UserEmailFooterSettingsSerializer(serializers.ModelSerializer):
     
     def create(self, validated_data):
         """Create footer settings for the user"""
-        validated_data['user'] = self.context['request'].user.id
+        validated_data['user_email'] = self.context['request'].user_email
         return super().create(validated_data)
 
 

@@ -7,7 +7,7 @@ from typing import List, Dict, Optional
 from .models import UserEmailFooterSettings
 
 
-def generate_html_from_components(components: List[Dict], user, footer_settings=None, campaign_subject=None) -> str:
+def generate_html_from_components(components: List[Dict], user_email, footer_settings=None, campaign_subject=None) -> str:
     """
     Generate HTML from campaign components.
     Handles footer components by replacing them with footer HTML from user settings.
@@ -31,7 +31,7 @@ def generate_html_from_components(components: List[Dict], user, footer_settings=
     # Get footer settings for the user if not provided
     if footer_settings is None:
         try:
-            footer_settings = UserEmailFooterSettings.objects.filter(user=user).first()
+            footer_settings = UserEmailFooterSettings.objects.filter(user_email=user_email).first()
         except Exception:
             footer_settings = None
     
@@ -61,14 +61,14 @@ def generate_html_from_components(components: List[Dict], user, footer_settings=
                     )
         else:
             # Generate HTML for other component types
-            html = _component_to_html(component_type, component_data, user, footer_settings, campaign_subject)
+            html = _component_to_html(component_type, component_data, user_email, footer_settings, campaign_subject)
             if html:
                 body_parts.append(html)
     
     return '\n'.join(body_parts)
 
 
-def _component_to_html(component_type: str, data: Dict, user=None, footer_settings=None, campaign_subject=None) -> str:
+def _component_to_html(component_type: str, data: Dict, user_email=None, footer_settings=None, campaign_subject=None) -> str:
     """
     Convert a single component to HTML.
     
@@ -386,7 +386,7 @@ def _wrap_with_padding(inner_html: str, data: Dict) -> str:
     return f'<div style="{style} box-sizing: border-box; max-width: 100%; width: 100%; overflow-wrap: break-word;">{inner_html}</div>'
 
 
-def generate_full_email_html(components: List[Dict], user, footer_settings: Optional[UserEmailFooterSettings] = None, campaign_subject: Optional[str] = None) -> str:
+def generate_full_email_html(components: List[Dict], user_email, footer_settings: Optional[UserEmailFooterSettings] = None, campaign_subject: Optional[str] = None) -> str:
     """
     Generate complete email HTML from components and footer settings.
     Matches frontend generateHtml() output exactly for consistent preview.
@@ -403,12 +403,12 @@ def generate_full_email_html(components: List[Dict], user, footer_settings: Opti
     # Get footer settings if not provided
     if footer_settings is None:
         try:
-            footer_settings = UserEmailFooterSettings.objects.filter(user=user).first()
+            footer_settings = UserEmailFooterSettings.objects.filter(user_email=user_email).first()
         except Exception:
             footer_settings = None
     
     # Generate body HTML from components.
-    body_html = generate_html_from_components(components, user, footer_settings, campaign_subject)
+    body_html = generate_html_from_components(components, user_email, footer_settings, campaign_subject)
 
     # If there's no explicit footer component, append user's footer by default
     try:
