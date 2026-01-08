@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from rest_framework.viewsets import ModelViewSet
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.exceptions import AuthenticationFailed
+from rest_framework.permissions import AllowAny
 from django.utils import timezone
 from .utils import validate_token 
 from django.db.models import Q, Count
@@ -63,6 +64,11 @@ class CampaignViewSet(ModelViewSet):
         Called before any action.
         Validate the token using the existing utils.validate_token function.
         """
+        # Skip auth for public endpoints
+        if getattr(self, 'action', None) == 'analytics':
+         return super().initial(request, *args, **kwargs)
+
+    
         super().initial(request, *args, **kwargs)
 
         auth_header = request.headers.get("Authorization")
