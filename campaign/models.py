@@ -155,7 +155,7 @@ class CampaignRecipient(models.Model):
     campaign = models.ForeignKey(Campaign, on_delete=models.CASCADE, related_name='recipients')
 
     # refer to the added peoples by using thier email field in model
-    person_email = models.EmailField() 
+    person_id=models.IntegerField()
     
     # Contact details (snapshot at time of campaign)
     email = models.EmailField()
@@ -305,7 +305,7 @@ class UserEmailFooterSettings(models.Model):
         verbose_name_plural = 'User Email Footer Settings'
     
     def __str__(self):
-        return "Footer settings for {}".format(str(self.user.email))
+        return "Footer settings for {}".format(str(self.user_email))
     
     @property
     def has_content(self):
@@ -320,10 +320,7 @@ class EmailUnsubscribe(models.Model):
     If a recipient unsubscribes, this prevents future sends from this user to that email.
     """
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-   
-    # User reference from CRM
-    user_id = models.IntegerField(db_index=True, null=True, blank=True)
-
+    user_email = models.EmailField()
     email = models.EmailField(db_index=True)
     reason = models.CharField(max_length=255, blank=True, default="")
     source_campaign = models.ForeignKey('Campaign', null=True, blank=True, on_delete=models.SET_NULL, related_name='unsubscribes')
@@ -331,12 +328,12 @@ class EmailUnsubscribe(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        unique_together = ['user', 'email']
+        unique_together = ['user_email', 'email']
         indexes = [
-            models.Index(fields=['user', 'email']),
+            models.Index(fields=['user_email', 'email']),
         ]
         verbose_name = 'Email Unsubscribe'
         verbose_name_plural = 'Email Unsubscribes'
 
     def __str__(self):
-        return "{} -> {}".format(str(self.user_id), str(self.email))
+        return "{} -> {}".format(str(self.user_email), str(self.email))

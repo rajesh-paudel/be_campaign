@@ -19,7 +19,7 @@ from .utils import (
 logger = logging.getLogger(__name__)
 
 
-def _build_html_for_recipient(campaign: Campaign, recipient: CampaignRecipient, base_html: str) -> str:
+def _build_html_for_recipient(campaign: Campaign, recipient: CampaignRecipient, base_html: str,token) -> str:
     """
     Build personalized HTML for a specific recipient using cached base HTML.
     Replaces dynamic placeholders (name, email, unsubscribe link) efficiently.
@@ -37,7 +37,7 @@ def _build_html_for_recipient(campaign: Campaign, recipient: CampaignRecipient, 
         return ""
     
     # Get recipient data for placeholder replacement
-    recipient_data = get_recipient_data_for_subject(recipient)
+    recipient_data = get_recipient_data_for_subject(recipient,token)
     
     # Generate unique unsubscribe URL for this recipient
     try:
@@ -59,7 +59,7 @@ def _build_html_for_recipient(campaign: Campaign, recipient: CampaignRecipient, 
     return html_message
 
 
-def _build_params_for_batch(campaign: Campaign, recipients: List[CampaignRecipient], base_html: str) -> List[Dict]:
+def _build_params_for_batch(campaign: Campaign, recipients: List[CampaignRecipient], base_html: str,token:str) -> List[Dict]:
     """
     Build email parameters for a batch of recipients.
     Efficiently personalizes cached HTML for each recipient.
@@ -73,19 +73,21 @@ def _build_params_for_batch(campaign: Campaign, recipients: List[CampaignRecipie
         List of email parameter dictionaries ready for Resend batch API
     """
     params: List[Dict] = []
-    sender_identity = format_sender_identity(campaign.user_email)
+
+    # later develop sender identity for now just sender email
+    # sender_identity = format_sender_identity(campaign.user_email)
     
     # Extract sender email for unsubscribe header
-    sender_email = None
-    if '<' in sender_identity and '>' in sender_identity:
-        try:
-            sender_email = sender_identity.split('<', 1)[1].split('>', 1)[0].strip()
-        except Exception:
-            pass
+    # sender_email = None
+    # if '<' in sender_identity and '>' in sender_identity:
+    #     try:
+    #         sender_email = sender_identity.split('<', 1)[1].split('>', 1)[0].strip()
+    #     except Exception:
+    #         pass
     
     # Build parameters for each recipient
     for r in recipients:
-        recipient_data = get_recipient_data_for_subject(r)
+        recipient_data = get_recipient_data_for_subject(r,token)
         
         # Personalize subject line - ensure it's not empty
         subject = campaign.subject or "Email Campaign"
@@ -95,7 +97,7 @@ def _build_params_for_batch(campaign: Campaign, recipients: List[CampaignRecipie
             subject = "Email Campaign"
         
         # Personalize HTML content (single efficient pass)
-        html = _build_html_for_recipient(campaign, r, base_html)
+        html = _build_html_for_recipient(campaign, r, base_html,token)
         
         # Ensure HTML is not empty - use base_html as fallback
         if not html or len(html.strip()) < 50:
@@ -105,12 +107,12 @@ def _build_params_for_batch(campaign: Campaign, recipients: List[CampaignRecipie
         try:
             from django.core.signing import TimestampSigner
             signer = TimestampSigner()
-            token = signer.sign(f"{campaign.user_id}:{r.email}")
+            token = signer.sign(f"{campaign.user_email}:{r.email}")
             fe_base = getattr(settings, 'FRONTEND_BASE_URL', 'https://salesmonk.ca').rstrip('/')
             unsub_url = f"{fe_base}/unsubscribe?t={token}"
             
             # Build List-Unsubscribe header
-            mailto = f"mailto:{sender_email}?subject=unsubscribe" if sender_email else None
+            mailto = f"mailto:{campaign.user_email}?subject=unsubscribe" if campaign.user_email else None
             list_unsub = f"<{unsub_url}>{', ' + f'<{mailto}>' if mailto else ''}"
         except Exception:
             unsub_url = None
@@ -122,11 +124,11 @@ def _build_params_for_batch(campaign: Campaign, recipients: List[CampaignRecipie
         
         # Build email parameters
         email_params = {
-            "from": sender_identity,
+            "from": campaign.user_email,
             "to": [r.email.strip()],
             "subject": subject.strip() if subject else "Email Campaign",
             "html": html,
-            "reply_to": campaign.user_email if getattr(campaign.user, 'email', None) else None,
+            "reply_to": campaign.user_email or None,
             "headers": {
                 "X-Campaign-ID": str(campaign.id),
                 "X-Recipient-ID": str(r.id),
@@ -150,7 +152,7 @@ def _build_params_for_batch(campaign: Campaign, recipients: List[CampaignRecipie
 
 
 @shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=5, retry_backoff_max=300, retry_jitter=True, max_retries=5)
-def send_campaign_task(self, campaign_id: str):
+def send_campaign_task(self, campaign_id: str,token):
     campaign = Campaign.objects.get(pk=campaign_id)
     if not settings.RESEND_API_KEY:
         logger.error("RESEND_API_KEY missing; aborting campaign %s", campaign_id)
@@ -219,7 +221,7 @@ def send_campaign_task(self, campaign_id: str):
 
     # Acquire pending recipients
     # Exclude unsubscribed emails for this user
-    suppressed_emails = list(EmailUnsubscribe.objects.filter(user=campaign.user).values_list('email', flat=True))
+    suppressed_emails = list(EmailUnsubscribe.objects.filter(user_email=campaign.user_email).values_list('email', flat=True))
     
     # Reset any recipients stuck in 'sending' status from previous failed attempts
     campaign.recipients.filter(status='sending').exclude(email__in=suppressed_emails).update(status='pending', email_sent_at=None)
@@ -270,7 +272,7 @@ def send_campaign_task(self, campaign_id: str):
             continue
 
         # Pass pre-generated base_html to avoid regenerating for each recipient
-        params = _build_params_for_batch(campaign, batch, base_html)
+        params = _build_params_for_batch(campaign, batch, base_html,token)
         
         # Validate params before sending
         if not params or len(params) == 0:

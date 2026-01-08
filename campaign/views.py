@@ -25,7 +25,7 @@ from .serializers import (
 # from activity.models import People
 from .utils import (
     SubjectLinePlaceholderHandler, get_recipient_data_for_subject,
-    format_sender_identity, replace_body_placeholders, generate_footer_html
+    format_sender_identity, replace_body_placeholders, generate_footer_html,fetchPeopleByTags,
 )
 from .html_generator import generate_full_email_html
 from django.shortcuts import get_object_or_404
@@ -77,6 +77,7 @@ class CampaignViewSet(ModelViewSet):
         
         request.user_id = user_info["id"]
         request.user_email = user_info.get("email")
+        request.auth_token = token
 
     def get_object_or_404(self):
         return get_object_or_404(Campaign, pk=self.kwargs["pk"], user_email=self.request.user_email)
@@ -204,25 +205,25 @@ class CampaignViewSet(ModelViewSet):
         validated_data = serializer.validated_data
         
         # Rebuild recipients from tags every launch
-        # tag_ids = list(campaign.tags.values_list('id', flat=True))
-        # if tag_ids:
-        #     from activity.models import People
-        #     tagged_people = People.objects.filter(user=campaign.user, tags__id__in=tag_ids).distinct()
-        #     for person in tagged_people:
-        #         # Skip if person has no email
-        #         if not person.email or not person.email.strip():
-        #             continue
+        tag_ids = campaign.tags
+        if tag_ids:
+            
+            tagged_people = fetchPeopleByTags(tag_ids,request.auth_token)
+            for person in tagged_people:
+                # Skip if person has no email
+                if not person.email or not person.email.strip():
+                    continue
                     
-        #         if not CampaignRecipient.objects.filter(campaign=campaign, person=person).exists():
-        #             CampaignRecipient.objects.create(
-        #                 campaign=campaign,
-        #                 person=person,
-        #                 email=person.email,
-        #                 first_name=person.first_name or '',
-        #                 last_name=person.last_name or '',
-        #                 phone=person.phone or '',
-        #                 status='pending'
-        #             )
+                if not CampaignRecipient.objects.filter(campaign=campaign, person=person).exists():
+                    CampaignRecipient.objects.create(
+                        campaign=campaign,
+                        person=person,
+                        email=person.email,
+                        first_name=person.first_name or '',
+                        last_name=person.last_name or '',
+                        phone=person.phone or '',
+                        status='pending'
+                    )
 
         # Check if we have any recipients after rebuilding
         recipient_count = campaign.recipients.count()
@@ -262,7 +263,7 @@ class CampaignViewSet(ModelViewSet):
             campaign.status = 'sending'
             campaign.launched_at = timezone.now()
             campaign.save(update_fields=['status', 'launched_at', 'updated_at'])
-            send_campaign_task.delay(str(campaign.id))
+            send_campaign_task(str(campaign.id), request.auth_token)
             return Response({
                 'campaign_id': str(campaign.id),
                 'status': campaign.status,
@@ -538,19 +539,14 @@ class UnsubscribeView(generics.GenericAPIView):
         signer = TimestampSigner()
         try:
             value = signer.unsign(token, max_age=60 * 60 * 24 * 60)  # 60 days
-            user_id_str, email = value.split(':', 1)
-            from django.contrib.auth import get_user_model
-            User = get_user_model()
-            try:
-                user = User.objects.get(pk=user_id_str)
-            except User.DoesNotExist:
-                return Response({'detail': 'invalid token user'}, status=status.HTTP_400_BAD_REQUEST)
-
+            user_email, email = value.split(':', 1)
+            
             # Create suppression if not exists
-            EmailUnsubscribe.objects.get_or_create(user=user, email=email)
+            EmailUnsubscribe.objects.get_or_create(user_email=user_email, email=email)
 
             # Also update existing recipients for that email to unsubscribed
-            CampaignRecipient.objects.filter(campaign__user=user, email=email).update(status='unsubscribed')
+            CampaignRecipient.objects.filter( campaign__user_email=user_email,
+                email=email).update(status='unsubscribed')
 
             # Plain confirmation
             return Response({'detail': 'You have been unsubscribed', 'email': email})
@@ -565,76 +561,66 @@ class UnsubscribeListView(generics.ListCreateAPIView):
     GET: list unsubscribed emails. POST: add an email to suppression.
     """
     serializer_class = EmailUnsubscribeSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = []
+      # for validating user by taking token passing to crm and getting user info back
+    def initial(self, request, *args, **kwargs):
+        """
+        Called before any action.
+        Validate the token using the existing utils.validate_token function.
+        """
+        super().initial(request, *args, **kwargs)
+
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            raise AuthenticationFailed("Authorization token required")
+
+        token = auth_header.split("Bearer ")[1]
+        user_info = validate_token(token)
+      
+        if not user_info:
+            raise AuthenticationFailed("Invalid or expired token")
+        
+        request.user_id = user_info["id"]
+        request.user_email = user_info.get("email")
+
 
     def get_queryset(self):
-        return EmailUnsubscribe.objects.filter(user=self.request.user).order_by('-created_at')
+        return EmailUnsubscribe.objects.filter(user_email=self.request.user_email).order_by('-created_at')
 
     def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
+        serializer.save(user_email=self.request.user_email)
 
 
 class UnsubscribeDetailView(generics.DestroyAPIView):
     """Remove an email from suppression list (resubscribe)."""
     serializer_class = EmailUnsubscribeSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = []
+      # for validating user by taking token passing to crm and getting user info back
+    def initial(self, request, *args, **kwargs):
+        """
+        Called before any action.
+        Validate the token using the existing utils.validate_token function.
+        """
+        super().initial(request, *args, **kwargs)
+
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            raise AuthenticationFailed("Authorization token required")
+
+        token = auth_header.split("Bearer ")[1]
+        user_info = validate_token(token)
+      
+        if not user_info:
+            raise AuthenticationFailed("Invalid or expired token")
+        
+        request.user_id = user_info["id"]
+        request.user_email = user_info.get("email")
 
     def get_queryset(self):
-        return EmailUnsubscribe.objects.filter(user=self.request.user)
+        return EmailUnsubscribe.objects.filter(user_email=self.request.user_email)
     
     # (analytics and unsubscribe_link actions belong to CampaignViewSet; removed here)
 
-
-# class PeopleListView(generics.ListAPIView):
-#     """List people for campaign recipient selection"""
-#     permission_classes = [permissions.IsAuthenticated]
-    
-#     def get_queryset(self):
-#         return People.objects.filter(user=self.request.user).exclude(
-#             email__isnull=True
-#         ).exclude(email='')
-    
-#     def get_serializer_class(self):
-#         # Simple serializer for person selection
-#         from rest_framework import serializers
-        
-#         class PersonSelectionSerializer(serializers.ModelSerializer):
-#             full_name = serializers.SerializerMethodField()
-            
-#             class Meta:
-#                 model = People
-#                 fields = ['id', 'first_name', 'last_name', 'email', 'phone', 'full_name']
-            
-#             def get_full_name(self, obj):
-#                 first_name = str(obj.first_name) if obj.first_name else ""
-#                 last_name = str(obj.last_name) if obj.last_name else ""
-#                 full_name = "{} {}".format(first_name, last_name).strip()
-#                 return full_name if full_name else str(obj.email)
-        
-#         return PersonSelectionSerializer
-    
-#     def list(self, request, *args, **kwargs):
-#         """List people with search functionality"""
-#         queryset = self.get_queryset()
-        
-#         # Apply search filter
-#         search = request.query_params.get('search', '')
-#         if search:
-#             queryset = queryset.filter(
-#                 Q(first_name__icontains=search) |
-#                 Q(last_name__icontains=search) |
-#                 Q(email__icontains=search) |
-#                 Q(phone__icontains=search)
-#             )
-        
-#         # Paginate
-#         page = self.paginate_queryset(queryset)
-#         if page is not None:
-#             serializer = self.get_serializer(page, many=True)
-#             return self.get_paginated_response(serializer.data)
-        
-#         serializer = self.get_serializer(queryset, many=True)
-#         return Response(serializer.data)
 
 
 class CampaignRecipientViewSet(ModelViewSet):

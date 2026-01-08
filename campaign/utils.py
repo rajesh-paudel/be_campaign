@@ -7,7 +7,7 @@ from html import escape
 from django.core.signing import TimestampSigner
 import requests
 from django.conf import settings
-
+import logging
 class SubjectLinePlaceholderHandler:
     """
     Handles parsing and replacement of placeholders in campaign subject lines.
@@ -231,7 +231,7 @@ def format_sender_identity(user) -> str:
     return f"{name} <{email}>"
 
 
-def get_recipient_data_for_subject(recipient) -> Dict[str, Optional[str]]:
+def get_recipient_data_for_subject(recipient,token) -> Dict[str, Optional[str]]:
     """
     Extract recipient data for subject line replacement.
     
@@ -247,12 +247,14 @@ def get_recipient_data_for_subject(recipient) -> Dict[str, Optional[str]]:
     business_name = None
     
     # If recipient data is empty, try to get from the person
-    if not first_name and recipient.person:
-        first_name = recipient.person.first_name
-    if not last_name and recipient.person:
-        last_name = recipient.person.last_name
-    if recipient.person:
-        business_name = recipient.person.business_name
+    if recipient.person_id: 
+        person_info = fetch_person(recipient.person_id,token)
+    if not first_name and recipient.person_id:
+        first_name = person_info.get("first_name")
+    if not last_name and recipient.person_id:
+        last_name = person_info.get("last_name")
+    if recipient.person_id:
+        business_name =  person_info.get("business_name")
     
     # Build and return the dict used for both subject and body replacements
     return {
@@ -410,3 +412,36 @@ def validate_token(token: str):
         # ValueError for invalid JSON
         print(f"Token validation failed: {e}")
         return None
+    
+def fetch_person(person_id,token:str):
+    try:
+        headers = {"Authorization": f"Bearer {token}"}
+        response = requests.get(f"{settings.BE_CRM_API}people/{person_id}/",headers=headers, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        return {
+            "first_name": data.get("first_name"),
+            "last_name": data.get("last_name"),
+            "business_name": data.get("business_name"),
+        }
+    except requests.RequestException:
+        return {}    
+    
+
+def fetchPeopleByTags(tag_ids,token:str):  
+    """Fetch people from activity API filtered by tag IDs."""    
+    if not tag_ids:
+     return []
+    try:
+        API_URL= f"{settings.BE_CRM_API}activity/people/"
+        headers = {"Authorization": f"Bearer {token}"}
+        params = {
+            "tags": ",".join([str(t) for t in tag_ids]),  # filter by tags
+        }
+
+        response = requests.get(API_URL, headers=headers, params=params, timeout=10)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+       
+        return []

@@ -6,7 +6,7 @@ from .views import (
     # CampaignTemplateViewSet,
     CampaignRecipientViewSet,
     # PeopleListView,
-    DebugView,
+    # DebugView,
 )
 
 router = DefaultRouter()
