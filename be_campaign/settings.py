@@ -71,6 +71,7 @@ RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "noreply@yourdomain.com")
 
 MAILGUN_API_KEY = os.getenv("MAILGUN_API_KEY")
 MAILGUN_DOMAIN = os.getenv("MAILGUN_DOMAIN")
+SANDBOX_DOMAIN=os.getenv("SANDBOX_DOMAIN")
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
@@ -208,6 +209,8 @@ CELERY_RESULT_SERIALIZER = "json"
 CELERY_BEAT_SCHEDULE = {
     
 }
+CELERY_TASK_ALWAYS_EAGER = True
+CELERY_TASK_EAGER_PROPAGATES = True
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 CELERY_TASK_IGNORE_RESULT = True
 

@@ -6,7 +6,7 @@ from django.conf import settings
 from html import escape
 import resend
 import logging
-
+import requests
 from .models import Campaign, CampaignRecipient, CampaignMessage, EmailUnsubscribe
 from .html_generator import generate_full_email_html
 from .utils import (
@@ -14,12 +14,13 @@ from .utils import (
     get_recipient_data_for_subject,
     replace_body_placeholders,
     format_sender_identity,
+    fetch_person,
 )
 
 logger = logging.getLogger(__name__)
 
 
-def _build_html_for_recipient(campaign: Campaign, recipient: CampaignRecipient, base_html: str,token) -> str:
+def build_html_for_recipient(campaign: Campaign, recipient: CampaignRecipient, base_html: str,token) -> str:
     """
     Build personalized HTML for a specific recipient using cached base HTML.
     Replaces dynamic placeholders (name, email, unsubscribe link) efficiently.
@@ -32,18 +33,22 @@ def _build_html_for_recipient(campaign: Campaign, recipient: CampaignRecipient, 
     Returns:
         Personalized HTML ready to send
     """
+   
     # Validate base_html
     if not base_html or len(base_html.strip()) < 50:
         return ""
     
     # Get recipient data for placeholder replacement
     recipient_data = get_recipient_data_for_subject(recipient,token)
-    
+   
+   # Use recipient.email if present, otherwise fall back to recipient_data['email']
+    email_to_use = recipient.email or recipient_data.get('email', '')
+
     # Generate unique unsubscribe URL for this recipient
     try:
         from django.core.signing import TimestampSigner
         signer = TimestampSigner()
-        token = signer.sign(f"{campaign.user_email}:{recipient.email}")
+        token = signer.sign(f"{campaign.user_email}:{email_to_use}")
         fe_base = getattr(settings, 'FRONTEND_BASE_URL', 'https://salesmonk.ca').rstrip('/')
         unsub_url = f"{fe_base}/unsubscribe?t={token}"
     except Exception:
@@ -59,107 +64,56 @@ def _build_html_for_recipient(campaign: Campaign, recipient: CampaignRecipient, 
     return html_message
 
 
-def _build_params_for_batch(campaign: Campaign, recipients: List[CampaignRecipient], base_html: str,token:str) -> List[Dict]:
-    """
-    Build email parameters for a batch of recipients.
-    Efficiently personalizes cached HTML for each recipient.
-    
-    Args:
-        campaign: Campaign instance
-        recipients: List of recipients
-        base_html: Pre-generated base HTML (shared template for all recipients)
-    
-    Returns:
-        List of email parameter dictionaries ready for Resend batch API
-    """
-    params: List[Dict] = []
 
-    # later develop sender identity for now just sender email
-    # sender_identity = format_sender_identity(campaign.user_email)
+def send_email_mailgun(from_email: str, from_name: str, to_email: str, subject: str, html: str, reply_to: str, campaign_id: str, recipient_id: str):
+    """
+    Send a single email via Mailgun.
+    """
+    MAILGUN_DOMAIN = settings.MAILGUN_DOMAIN
+    SANDBOX_DOMAIN = settings.SANDBOX_DOMAIN
+    MAILGUN_API_KEY = settings.MAILGUN_API_KEY
     
-    # Extract sender email for unsubscribe header
-    # sender_email = None
-    # if '<' in sender_identity and '>' in sender_identity:
-    #     try:
-    #         sender_email = sender_identity.split('<', 1)[1].split('>', 1)[0].strip()
-    #     except Exception:
-    #         pass
-    
-    # Build parameters for each recipient
-    for r in recipients:
-        recipient_data = get_recipient_data_for_subject(r,token)
-        
-        # Personalize subject line - ensure it's not empty
-        subject = campaign.subject or "Email Campaign"
-        if subject:
-            subject = SubjectLinePlaceholderHandler.replace_placeholders(subject, recipient_data)
-        if not subject or not subject.strip():
-            subject = "Email Campaign"
-        
-        # Personalize HTML content (single efficient pass)
-        html = _build_html_for_recipient(campaign, r, base_html,token)
-        
-        # Ensure HTML is not empty - use base_html as fallback
-        if not html or len(html.strip()) < 50:
-            html = base_html  # Fallback to base HTML if personalization fails
-        
-        # Generate unique unsubscribe URL for headers
-        try:
-            from django.core.signing import TimestampSigner
-            signer = TimestampSigner()
-            token = signer.sign(f"{campaign.user_email}:{r.email}")
-            fe_base = getattr(settings, 'FRONTEND_BASE_URL', 'https://salesmonk.ca').rstrip('/')
-            unsub_url = f"{fe_base}/unsubscribe?t={token}"
-            
-            # Build List-Unsubscribe header
-            mailto = f"mailto:{campaign.user_email}?subject=unsubscribe" if campaign.user_email else None
-            list_unsub = f"<{unsub_url}>{', ' + f'<{mailto}>' if mailto else ''}"
-        except Exception:
-            unsub_url = None
-            list_unsub = None
-        
-        # Validate required fields
-        if not r.email or not r.email.strip():
-            continue  # Skip recipients without email
-        
-        # Build email parameters
-        email_params = {
-            "from": campaign.user_email,
-            "to": [r.email.strip()],
-            "subject": subject.strip() if subject else "Email Campaign",
+    print("before send")
+    resp = requests.post(
+        f"{MAILGUN_DOMAIN}/v3/{SANDBOX_DOMAIN}/messages",
+        auth=("api", MAILGUN_API_KEY),
+        data={
+            "from": f"Rajesh Paudel < rajesh@salesmonk.ca >",
+            "to": to_email,
+            "subject": subject,
             "html": html,
-            "reply_to": campaign.user_email or None,
-            "headers": {
-                "X-Campaign-ID": str(campaign.id),
-                "X-Recipient-ID": str(r.id),
-                "X-User-ID": str(campaign.user_email),
-                "X-Campaign-Name": str(campaign.name) if campaign.name else "",
-            }
-        }
-        
-        # Add optional headers
-        if list_unsub:
-            email_params["headers"]["List-Unsubscribe"] = list_unsub
-            email_params["headers"]["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
-        
-        # Add attachments if present
-        if campaign.attachments:
-            email_params["attachments"] = campaign.attachments
-        
-        params.append(email_params)
-    
-    return params
+            "h:Reply-To": reply_to,
+            "h:X-Campaign-ID": campaign_id,  
+            "h:X-Recipient-ID": recipient_id 
+        },
+     
+        timeout=10
+    )
+    # safer print
+    try:
+        print("Status code:", resp.status_code)
+        print("Response JSON:", resp.json())
+    except ValueError:
+        # if response is not JSON
+        print("Response Text:", resp.text)
+    return resp.json() if resp.status_code == 200 else {"error": resp.text}
 
 
 @shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=5, retry_backoff_max=300, retry_jitter=True, max_retries=5)
 def send_campaign_task(self, campaign_id: str,token):
-    campaign = Campaign.objects.get(pk=campaign_id)
-    if not settings.RESEND_API_KEY:
-        logger.error("RESEND_API_KEY missing; aborting campaign %s", campaign_id)
+   
+    try:
+        campaign = Campaign.objects.get(pk=campaign_id)
+    except Campaign.DoesNotExist:
+        logger.error(f"Campaign {campaign_id} does not exist")
         return
 
-    resend.api_key = settings.RESEND_API_KEY
 
+    if not settings.MAILGUN_API_KEY or not settings.MAILGUN_DOMAIN:
+        logger.error("MAILGUN_API_KEY or MAILGUN_DOMAIN missing; aborting campaign %s", campaign_id)
+        return
+
+    
     # Mark status
     if campaign.status not in ['sending', 'scheduled', 'paused']:
         campaign.status = 'sending'
@@ -231,6 +185,7 @@ def send_campaign_task(self, campaign_id: str,token):
     )
     
     if not recipients:
+        logger.warning("Campaign %s has no recipients.", campaign_id)
         # Check if all recipients are already processed
         total_recipients = campaign.recipients.count()
         if total_recipients == 0:
@@ -245,119 +200,86 @@ def send_campaign_task(self, campaign_id: str,token):
         campaign.completed_at = timezone.now()
         campaign.save(update_fields=['status', 'completed_at', 'updated_at'])
         return
+    
+    # if recipient only has person ids and not other fields
+    for recipient in recipients:
+     if not recipient.email and recipient.person_id:
+        person_data = fetch_person(recipient.person_id, token)
+        recipient.email = person_data.get('email', '')
+        recipient.first_name = person_data.get('first_name', recipient.first_name)
+        recipient.last_name = person_data.get('last_name', recipient.last_name)
+        recipient.save(update_fields=['email', 'first_name', 'last_name'])
 
     sent_count = campaign.emails_sent or 0
     failed_count = campaign.emails_failed or 0
-
-    # Process in batches of up to 100
-    batch_size = 100
-    idx = 0
-    while idx < len(recipients):
-        batch = recipients[idx: idx + batch_size]
-        idx += batch_size
-
-        # lock: set status to 'sending' to avoid double-send
+    batch_size = 30
+    
+   
+    # Process in batches
+    for i in range(0, len(recipients), batch_size):
+        batch = recipients[i:i+batch_size]
+        
+        # Lock recipients
         with transaction.atomic():
             acquired = CampaignRecipient.objects.filter(pk__in=[r.pk for r in batch], status='pending').update(status='sending')
         if acquired == 0:
             continue
-
-        # Validate base_html before sending
-        if not base_html or len(base_html.strip()) < 50:
-            for r in batch:
-                r.status = 'failed'
-                r.error_message = 'Invalid HTML content'
+        
+        for r in batch:
+            try:
+                
+                html = build_html_for_recipient(campaign, r, base_html,token)
+                
+                result = send_email_mailgun(
+                    from_email=campaign.user_email,
+                    from_name=campaign.user.full_name if hasattr(campaign, 'user') else campaign.user_email,
+                    to_email=r.email,
+                    subject=campaign.subject or "Email Campaign",
+                    html=html,
+                    reply_to=campaign.user_email,
+                    campaign_id=str(campaign.id),
+                    recipient_id=str(r.id)
+                )
+               
+                # Handle Mailgun response
+                if result.get("id"):
+                    r.status = "sent"
+                    r.email_sent_at = timezone.now()
+                    CampaignMessage.objects.create(
+                        campaign=campaign,
+                        recipient=r,
+                        provider='mailgun',
+                        message_id=result["id"],
+                        status='sent'
+                    )
+                    sent_count += 1
+                else:
+                    r.status = "failed"
+                    r.error_message = result.get("error", "Unknown error")
+                    failed_count += 1
+                
+                r.save(update_fields=['status', 'email_sent_at', 'error_message', 'updated_at'])
+            
+            except Exception as e:
+                r.status = "failed"
+                r.error_message = str(e)
                 r.save(update_fields=['status', 'error_message', 'updated_at'])
                 failed_count += 1
-            continue
-
-        # Pass pre-generated base_html to avoid regenerating for each recipient
-        params = _build_params_for_batch(campaign, batch, base_html,token)
-        
-        # Validate params before sending
-        if not params or len(params) == 0:
-            for r in batch:
-                r.status = 'failed'
-                r.error_message = 'Failed to build email parameters'
-                r.save(update_fields=['status', 'error_message', 'updated_at'])
-                failed_count += 1
-            continue
-        
-        try:
-            result = resend.Batch.send(params)  # returns list of results with ids
-            # According to resend python client, returns {'data': [{'id': '...', ...}, ...]} or list
-            items = []
-            if isinstance(result, dict) and 'data' in result:
-                items = result['data']
-            elif isinstance(result, list):
-                items = result
-
-            # Map responses back to recipients by order
-            for i, r in enumerate(batch):
-                try:
-                    resp = items[i] if i < len(items) else {}
-                    
-                    # Check for error in response
-                    if isinstance(resp, dict) and 'error' in resp:
-                        r.status = 'failed'
-                        r.error_message = str(resp.get('error', 'Unknown error'))
-                        r.save(update_fields=['status', 'error_message', 'updated_at'])
-                        failed_count += 1
-                        continue
-                    
-                    message_id = resp.get('id') if isinstance(resp, dict) else None
-                    if message_id:
-                        CampaignMessage.objects.create(
-                            campaign=campaign,
-                            recipient=r,
-                            provider='resend',
-                            message_id=message_id,
-                            status='sent'
-                        )
-                        r.status = 'sent'
-                        r.email_sent_at = timezone.now()
-                        r.error_message = ''
-                        r.save(update_fields=['status', 'email_sent_at', 'error_message', 'updated_at'])
-                        sent_count += 1
-                    else:
-                        r.status = 'failed'
-                        error_msg = resp.get('message', resp.get('error', 'No message id returned')) if isinstance(resp, dict) else 'No message id returned'
-                        r.error_message = str(error_msg)
-                        r.save(update_fields=['status', 'error_message', 'updated_at'])
-                        failed_count += 1
-                except Exception as e:
-                    r.status = 'failed'
-                    r.error_message = str(e)
-                    r.save(update_fields=['status', 'error_message', 'updated_at'])
-                    failed_count += 1
-
-        except Exception as e:
-            # Mark this batch recipients failed
-            for r in batch:
-                try:
-                    r.status = 'failed'
-                    r.error_message = f"Batch error: {str(e)}"
-                    r.save(update_fields=['status', 'error_message', 'updated_at'])
-                    failed_count += 1
-                except Exception:
-                    pass
-            # Don't re-raise - continue with other batches and mark campaign as failed at end
-            # This prevents campaigns from getting stuck in retry loops
-        finally:
-            campaign.emails_sent = sent_count
-            campaign.emails_failed = failed_count
-            campaign.total_recipients = campaign.recipients.count()
-            campaign.save(update_fields=['emails_sent', 'emails_failed', 'total_recipients', 'updated_at'])
-
-    # Finalize status
+    
+    # Update campaign stats
+    campaign.emails_sent = sent_count
+    campaign.emails_failed = failed_count
+    campaign.total_recipients = campaign.recipients.count()
+    campaign.completed_at = timezone.now()
+    
     if failed_count == 0 and sent_count > 0:
         campaign.status = 'sent'
     elif sent_count > 0:
         campaign.status = 'completed_with_errors'
     else:
-        # If no emails were sent at all, mark as failed
         campaign.status = 'failed'
-    campaign.completed_at = timezone.now()
-    campaign.save(update_fields=['status', 'completed_at', 'updated_at'])
+    
+    campaign.save(update_fields=['status', 'emails_sent', 'emails_failed', 'total_recipients', 'completed_at', 'updated_at'])
+    
 
 

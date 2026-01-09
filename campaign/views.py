@@ -4,7 +4,6 @@ from rest_framework.response import Response
 from rest_framework.viewsets import ModelViewSet
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.exceptions import AuthenticationFailed
-from rest_framework.permissions import AllowAny
 from django.utils import timezone
 from .utils import validate_token 
 from django.db.models import Q, Count
@@ -104,6 +103,7 @@ class CampaignViewSet(ModelViewSet):
 
     @action(detail=True, methods=['get'], permission_classes=[])
     def analytics(self, request, pk=None):
+        
         """Get campaign analytics and statistics (public)."""
         try:
             campaign = Campaign.objects.get(pk=pk)
@@ -211,25 +211,25 @@ class CampaignViewSet(ModelViewSet):
         validated_data = serializer.validated_data
         
         # Rebuild recipients from tags every launch
-        tag_ids = campaign.tags
-        if tag_ids:
+        # tag_ids = campaign.tags
+        # if tag_ids:
             
-            tagged_people = fetchPeopleByTags(tag_ids,request.auth_token)
-            for person in tagged_people:
-                # Skip if person has no email
-                if not person.email or not person.email.strip():
-                    continue
+        #     tagged_people = fetchPeopleByTags(tag_ids,request.auth_token)
+        #     for person in tagged_people:
+        #         # Skip if person has no email
+        #         if not person.email or not person.email.strip():
+        #             continue
                     
-                if not CampaignRecipient.objects.filter(campaign=campaign, person=person).exists():
-                    CampaignRecipient.objects.create(
-                        campaign=campaign,
-                        person=person,
-                        email=person.email,
-                        first_name=person.first_name or '',
-                        last_name=person.last_name or '',
-                        phone=person.phone or '',
-                        status='pending'
-                    )
+        #         if not CampaignRecipient.objects.filter(campaign=campaign, person=person).exists():
+        #             CampaignRecipient.objects.create(
+        #                 campaign=campaign,
+        #                 person=person,
+        #                 email=person.email,
+        #                 first_name=person.first_name or '',
+        #                 last_name=person.last_name or '',
+        #                 phone=person.phone or '',
+        #                 status='pending'
+        #             )
 
         # Check if we have any recipients after rebuilding
         recipient_count = campaign.recipients.count()
@@ -269,7 +269,7 @@ class CampaignViewSet(ModelViewSet):
             campaign.status = 'sending'
             campaign.launched_at = timezone.now()
             campaign.save(update_fields=['status', 'launched_at', 'updated_at'])
-            send_campaign_task(str(campaign.id), request.auth_token)
+            send_campaign_task.delay(str(campaign.id), request.auth_token)
             return Response({
                 'campaign_id': str(campaign.id),
                 'status': campaign.status,

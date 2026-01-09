@@ -249,6 +249,7 @@ def get_recipient_data_for_subject(recipient,token) -> Dict[str, Optional[str]]:
     # If recipient data is empty, try to get from the person
     if recipient.person_id: 
         person_info = fetch_person(recipient.person_id,token)
+        
     if not first_name and recipient.person_id:
         first_name = person_info.get("first_name")
     if not last_name and recipient.person_id:
@@ -260,7 +261,7 @@ def get_recipient_data_for_subject(recipient,token) -> Dict[str, Optional[str]]:
     return {
         'first_name': first_name or '',
         'last_name': last_name or '',
-        'email': recipient.email or '',
+        'email': person_info.get("email"),
         'business_name': business_name or '',
         'company_name': business_name or '',
     }
@@ -423,6 +424,7 @@ def fetch_person(person_id,token:str):
             "first_name": data.get("first_name"),
             "last_name": data.get("last_name"),
             "business_name": data.get("business_name"),
+            "email":data.get("email"),
         }
     except requests.RequestException:
         return {}    
