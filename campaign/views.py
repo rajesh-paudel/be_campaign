@@ -4,6 +4,9 @@ from rest_framework.response import Response
 from rest_framework.viewsets import ModelViewSet
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.exceptions import AuthenticationFailed
+from rest_framework.views import APIView
+import hmac
+import hashlib
 from django.utils import timezone
 from .utils import validate_token 
 from django.db.models import Q, Count
@@ -27,6 +30,7 @@ from .utils import (
     SubjectLinePlaceholderHandler, get_recipient_data_for_subject,
     format_sender_identity, replace_body_placeholders, generate_footer_html,fetchPeopleByTags,
 )
+
 from .html_generator import generate_full_email_html
 from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
@@ -330,205 +334,108 @@ class CampaignViewSet(ModelViewSet):
 # ===== WEBHOOK AND UNSUBSCRIBE VIEWS =====
 
 @method_decorator(csrf_exempt, name='dispatch')
-class ResendWebhookView(generics.GenericAPIView):
-    """Webhook endpoint to receive Resend events and update aggregate counters.
+class MailgunWebhookView(APIView):
+    """Webhook endpoint to receive mailgun events and update aggregate counters.
 
-    Expected JSON: {"type": "delivered|opened|clicked|bounced|complained", "created_at": ts, "data": {"email": {...}, "delivered": {...}, "clicked": {...}}, "id": message_id}
-    We only rely on message_id and type.
+     payload structure of webhook 
+    {
+        "signature":
+        {
+            "token": "e5b4b40d54ca855d623088cced792bc0",
+            "timestamp": 1646396205,
+            "signature": "480fb19984da73c94dd6fc58762cb5b6f8543c1d7ce25fb2393f63e95d350b09"
+        }
+        “event-data”:
+        {
+            "event": "clicked",
+            "timestamp": 1646396196,
+            "id": "OTk6MTA1MDI6Y2xpY2tlZDoxNjQ2Mzk2MjA1",
+            // ...
+        }
+    }
     """
     permission_classes = []
 
     def post(self, request):
-        # Accept Resend style payloads, e.g. type: "email.delivered", data.email_id, headers[]
-        payload = request.data if isinstance(request.data, dict) else {}
-        event_type = str(payload.get('type') or '').lower()
-        data = payload.get('data') or {}
+        payload = request.data or {}
 
-        # message id from Resend
-        message_id = data.get('email_id') or data.get('id')
+          #  verify the webhook is actually coming from mailgun
+        # def verify_mailgun_signature(timestamp, token, signature):
+        #     msg = f"{timestamp}{token}".encode()
+        #     key = settings.MAILGUN_WEBHOOK_SIGNING_KEY.encode() 
+        #     expected = hmac.new(key, msg, hashlib.sha256).hexdigest()
+        #     return hmac.compare_digest(expected, signature)
 
-        # Normalize headers array to dict if present
-        headers_list = data.get('headers') or []
-        headers_dict = {}
-        try:
-            if isinstance(headers_list, list):
-                headers_dict = {h.get('name'): h.get('value') for h in headers_list if isinstance(h, dict)}
-        except Exception:
-            headers_dict = {}
+         
+        # signature = payload.get("signature", {})
+        # if not verify_mailgun_signature(
+        #     signature.get("timestamp", ""),
+        #     signature.get("token", ""),
+        #     signature.get("signature", "")
+        # ):
+        #     logger.warning("Invalid Mailgun webhook signature")
+        #     return Response({"detail": "invalid signature"}, status=403)
 
-        if not event_type:
-            return Response({'detail': 'Invalid webhook payload'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Check if this is a daily reminder email (not a campaign email)
-        email_type = headers_dict.get('X-Email-Type', '').lower()
-        is_daily_reminder = email_type == 'daily-reminder'
-        user_id_from_header = headers_dict.get('X-User-ID')
+        #  extract all the necessary data from payload
+        event_data = payload.get("event-data", {})
+        event = event_data.get("event")
+        message_id = event_data.get("id")
         
-        # Resolve CampaignMessage primarily by message_id; fallback to X-Recipient-ID
-        msg = None
-        recipient = None
-        campaign = None
-        if message_id:
-            msg = CampaignMessage.objects.select_related('campaign', 'recipient').filter(message_id=message_id).first()
-        if not msg and headers_dict.get('X-Recipient-ID'):
-            recipient_id = headers_dict.get('X-Recipient-ID')
-            try:
-                recipient = CampaignRecipient.objects.select_related('campaign').get(pk=recipient_id)
-                campaign = recipient.campaign
-            except CampaignRecipient.DoesNotExist:
-                pass
-        if msg:
-            campaign = msg.campaign
-            recipient = msg.recipient
-        
-        # Handle daily reminder emails (if not a campaign email)
-        if is_daily_reminder and not (msg or recipient):
-            # This is a daily reminder email bounce/failure
-            # Extract recipient email from webhook data
-            # Resend webhook structure: data.email or data.to or payload.to
-            recipient_email = ''
-            if data.get('email'):
-                email_obj = data.get('email')
-                if isinstance(email_obj, dict):
-                    recipient_email = email_obj.get('to') or email_obj.get('email') or ''
-                elif isinstance(email_obj, str):
-                    recipient_email = email_obj
-            elif data.get('to'):
-                recipient_email = data.get('to')
-            elif payload.get('to'):
-                recipient_email = payload.get('to')
-            
-            if isinstance(recipient_email, list):
-                recipient_email = recipient_email[0] if recipient_email else ''
-            recipient_email = str(recipient_email).strip()
-            
-            # Handle bounce events for daily reminders
-            if event_type in ['email.complained', 'complained', 'email.bounced', 'bounced', 'email.failed', 'failed']:
-                if not recipient_email:
-                    logger.warning(f"Daily reminder bounce event but no recipient email found. Message ID: {message_id}")
-                    return Response({'detail': 'ok'}, status=status.HTTP_200_OK)
-                
-                from notification.models import BouncedEmail
-                from django.contrib.auth import get_user_model
-                User = get_user_model()
-                
-                try:
-                    user = None
-                    if user_id_from_header:
-                        try:
-                            user = User.objects.get(pk=user_id_from_header)
-                        except User.DoesNotExist:
-                            pass
-                    
-                    if not user and recipient_email:
-                        # Try to find user by email
-                        user = User.objects.filter(email=recipient_email).first()
-                    
-                    # Create or update bounced email record
-                    bounce_type = 'bounced' if 'bounced' in event_type or 'complained' in event_type else 'failed'
-                    bounce_reason = data.get('bounce_reason') or data.get('error') or data.get('message') or ''
-                    
-                    BouncedEmail.objects.update_or_create(
-                        email=recipient_email,
-                        source='daily-reminder',
-                        defaults={
-                            'user': user,
-                            'bounce_type': bounce_type,
-                            'bounce_reason': str(bounce_reason)[:500] if bounce_reason else '',
-                            'message_id': message_id or '',
-                        }
-                    )
-                    
-                    logger.info(
-                        f"Daily reminder email bounced: {recipient_email} "
-                        f"(User: {user.id if user else 'unknown'}, Type: {bounce_type}, Message ID: {message_id})"
-                    )
-                    
-                except Exception as e:
-                    logger.error(f"Error recording daily reminder bounce: {str(e)}", exc_info=True)
-            
-            return Response({'detail': 'ok'}, status=status.HTTP_200_OK)
-        
-        # If not a daily reminder and no campaign message found, return
-        if not (msg or recipient):
-            return Response({'detail': 'message not found'}, status=status.HTTP_200_OK)
+        headers = event_data.get("message", {}).get("headers", {})
+        recipient_id = headers.get("X-Recipient-ID")
+         
+        if not message_id:
+            return Response({"detail": "missing message id"}, status=200)
 
-        # Map Resend event types to our categories
-        # email.delivered -> delivered
-        # email.opened -> opened
-        # email.clicked -> clicked (if provided)
-        # email.complained -> bounced
-        # email.failed -> failed
-        # email.sent / email.scheduled / email.received / email.delivery_delayed -> ignore
+        # Resolve message + recipient
+        msg = CampaignMessage.objects.filter(message_id=message_id).select_related(
+            "campaign", "recipient"
+        ).first()
 
-        # Map events to updates
+        recipient = msg.recipient if msg else None
+        campaign = msg.campaign if msg else None
+
+        if not recipient and recipient_id:
+            recipient = CampaignRecipient.objects.filter(pk=recipient_id).first()
+            campaign = recipient.campaign if recipient else None
+
+        if not recipient:
+            return Response({"detail": "recipient not found"}, status=200)
+
         now = timezone.now()
-        with transaction.atomic():
-            if event_type in ['email.delivered', 'delivered']:
-                if recipient.status in ['sent', 'sending', 'pending', 'failed']:
-                    recipient.status = 'delivered'
-                    recipient.email_delivered_at = recipient.email_delivered_at or now
-                    recipient.save(update_fields=['status', 'email_delivered_at', 'updated_at'])
-                # idempotent increments: only increment if this is the first time we mark delivered
-                if msg and msg.status != 'delivered':
-                    campaign.emails_delivered = (campaign.emails_delivered or 0) + 1
-                if msg:
-                    msg.status = 'delivered'
-                campaign.save(update_fields=['emails_delivered', 'updated_at'])
-                if msg:
-                    msg.save(update_fields=['status', 'updated_at'])
-            elif event_type in ['email.opened', 'opened']:
-                if recipient.status in ['delivered', 'sent', 'opened', 'clicked']:
-                    if recipient.status != 'opened' and recipient.status not in ['clicked']:
-                        recipient.status = 'opened'
-                    recipient.email_opened_at = recipient.email_opened_at or now
-                    recipient.save(update_fields=['status', 'email_opened_at', 'updated_at'])
-                if (not msg) or (msg.status not in ['opened', 'clicked']):
-                    campaign.emails_opened = (campaign.emails_opened or 0) + 1
-                if msg:
-                    msg.status = 'opened' if msg.status != 'clicked' else msg.status
-                campaign.save(update_fields=['emails_opened', 'updated_at'])
-                if msg:
-                    msg.save(update_fields=['status', 'updated_at'])
-            elif event_type in ['email.clicked', 'clicked']:
-                if recipient.status in ['delivered', 'sent', 'opened', 'clicked']:
-                    recipient.status = 'clicked'
-                    recipient.email_clicked_at = recipient.email_clicked_at or now
-                    recipient.save(update_fields=['status', 'email_clicked_at', 'updated_at'])
-                if (not msg) or (msg.status != 'clicked'):
-                    campaign.emails_clicked = (campaign.emails_clicked or 0) + 1
-                if msg:
-                    msg.status = 'clicked'
-                campaign.save(update_fields=['emails_clicked', 'updated_at'])
-                if msg:
-                    msg.save(update_fields=['status', 'updated_at'])
-            elif event_type in ['email.complained', 'complained', 'email.bounced', 'bounced']:
-                recipient.status = 'bounced'
-                recipient.email_bounced_at = recipient.email_bounced_at or now
-                recipient.save(update_fields=['status', 'email_bounced_at', 'updated_at'])
-                if (not msg) or (msg.status != 'bounced'):
-                    campaign.emails_bounced = (campaign.emails_bounced or 0) + 1
-                if msg:
-                    msg.status = 'bounced'
-                campaign.save(update_fields=['emails_bounced', 'updated_at'])
-                if msg:
-                    msg.save(update_fields=['status', 'updated_at'])
-            elif event_type in ['email.failed', 'failed']:
-                # mark failure, increment emails_failed
-                if recipient.status not in ['delivered', 'opened', 'clicked']:
-                    recipient.status = 'failed'
-                    recipient.save(update_fields=['status', 'updated_at'])
-                campaign.emails_failed = (campaign.emails_failed or 0) + 1
-                if msg:
-                    msg.status = 'failed'
-                campaign.save(update_fields=['emails_failed', 'updated_at'])
-                if msg:
-                    msg.save(update_fields=['status', 'updated_at'])
-            else:
-                # ignore others
-                pass
 
-        return Response({'detail': 'ok'})
+        with transaction.atomic():
+            if event == "delivered":
+                recipient.status = "delivered"
+                recipient.email_delivered_at = now
+                campaign.emails_delivered += 1
+                msg.status = "delivered"
+
+            elif event == "opened":
+                recipient.status = "opened"
+                recipient.email_opened_at = now
+                campaign.emails_opened += 1
+                msg.status = "opened"
+
+            elif event == "clicked":
+                recipient.status = "clicked"
+                recipient.email_clicked_at = now
+                campaign.emails_clicked += 1
+                msg.status = "clicked"
+
+            elif event in ["bounced", "complained", "failed"]:
+                recipient.status = "bounced"
+                recipient.email_bounced_at = now
+                campaign.emails_bounced += 1
+                msg.status = "bounced"
+            else:
+                pass  
+            recipient.save()
+            msg.save()
+            campaign.save()
+
+        return Response({"detail": "ok"}, status=200)
     
 
 class UnsubscribeView(generics.GenericAPIView):

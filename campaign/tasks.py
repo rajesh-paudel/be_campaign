@@ -84,18 +84,14 @@ def send_email_mailgun(from_email: str, from_name: str, to_email: str, subject: 
             "html": html,
             "h:Reply-To": reply_to,
             "h:X-Campaign-ID": campaign_id,  
-            "h:X-Recipient-ID": recipient_id 
+            "h:X-Recipient-ID": recipient_id ,
+            "h:X-User-Email":reply_to,
+            
         },
      
         timeout=10
     )
-    # safer print
-    try:
-        print("Status code:", resp.status_code)
-        print("Response JSON:", resp.json())
-    except ValueError:
-        # if response is not JSON
-        print("Response Text:", resp.text)
+    
     return resp.json() if resp.status_code == 200 else {"error": resp.text}
 
 
@@ -249,7 +245,7 @@ def send_campaign_task(self, campaign_id: str,token):
                         campaign=campaign,
                         recipient=r,
                         provider='mailgun',
-                        message_id=result["id"],
+                        message_id=result.get("id"),
                         status='sent'
                     )
                     sent_count += 1
