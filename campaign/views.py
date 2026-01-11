@@ -83,7 +83,7 @@ class CampaignViewSet(ModelViewSet):
       
         if not user_info:
             raise AuthenticationFailed("Invalid or expired token")
-        
+        request.user_info=user_info
         request.user_id = user_info["id"]
         request.user_email = user_info.get("email")
         request.auth_token = token
@@ -273,7 +273,7 @@ class CampaignViewSet(ModelViewSet):
             campaign.status = 'sending'
             campaign.launched_at = timezone.now()
             campaign.save(update_fields=['status', 'launched_at', 'updated_at'])
-            send_campaign_task.delay(str(campaign.id), request.auth_token)
+            send_campaign_task.delay(str(campaign.id), request.auth_token,request.user_info)
             return Response({
                 'campaign_id': str(campaign.id),
                 'status': campaign.status,

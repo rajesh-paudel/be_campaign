@@ -201,8 +201,8 @@ def format_sender_identity(user) -> str:
         Formatted sender string like 'Vishal Dhakal <vishal@salesmonk.ca>'
     """
     # Get user's first name and last name
-    first_name = getattr(user, 'first_name', '') or ''
-    last_name = getattr(user, 'last_name', '') or ''
+    first_name = user.first_name or ''
+    last_name = user.last_name or ''
     
     # Create full name from first and last name for display
     if first_name and last_name:
@@ -211,7 +211,7 @@ def format_sender_identity(user) -> str:
         name = first_name
     elif last_name:
         name = last_name
-    elif hasattr(user, 'username'):
+    elif user.username:
         name = user.username
     else:
         name = 'Sender'
@@ -220,7 +220,7 @@ def format_sender_identity(user) -> str:
     if first_name:
         # Remove any spaces and convert to lowercase
         email_prefix = first_name.strip().replace(' ', '').lower()
-    elif hasattr(user, 'username') and user.username:
+    elif user.username:
         email_prefix = user.username.strip().replace(' ', '').lower()
     else:
         email_prefix = 'noreply'

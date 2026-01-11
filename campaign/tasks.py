@@ -4,6 +4,7 @@ from django.utils import timezone
 from django.db import transaction
 from django.conf import settings
 from html import escape
+import json
 import resend
 import logging
 import requests
@@ -65,38 +66,68 @@ def build_html_for_recipient(campaign: Campaign, recipient: CampaignRecipient, b
 
 
 
-def send_email_mailgun(from_email: str, from_name: str, to_email: str, subject: str, html: str, reply_to: str, campaign_id: str, recipient_id: str):
+def send_mailgun_batch(sender_identity:str, recipients:List[CampaignRecipient], subject: str, html: str, reply_to: str, campaign:Campaign,):
     """
     Send a single email via Mailgun.
     """
     MAILGUN_DOMAIN = settings.MAILGUN_DOMAIN
     SANDBOX_DOMAIN = settings.SANDBOX_DOMAIN
     MAILGUN_API_KEY = settings.MAILGUN_API_KEY
-    
-    print("before send")
+    url=f"{MAILGUN_DOMAIN}/v3/{SANDBOX_DOMAIN}/messages"
+    to_emails = []
+    recipient_vars: Dict[str, Dict] = {}
+
+    from django.core.signing import TimestampSigner
+    signer = TimestampSigner()
+    fe_base = getattr(settings, "FRONTEND_BASE_URL", "https://salesmonk.ca").rstrip("/")
+    for r in recipients:
+        if not r.email:
+            continue
+
+        to_emails.append(r.email)
+
+        token = signer.sign(f"{campaign.user_email}:{r.email}")
+        unsubscribe_url = f"{fe_base}/unsubscribe?t={token}"
+
+        recipient_vars[r.email] = {
+            "first_name": r.first_name or "",
+            "last_name": r.last_name or "",
+            "recipient_id": str(r.id),
+            "campaign_id": str(campaign.id),
+            "unsubscribe_url": unsubscribe_url,
+        }
+
+    if not to_emails:
+        raise Exception("No valid recipient emails in batch")
+
+    data = {
+        "from": sender_identity,
+        "to": to_emails,
+        "subject": subject,
+        "html": html,
+        "h:Reply-To": reply_to,
+        "recipient-variables": json.dumps(recipient_vars),
+        "o:tracking": "yes",
+        "o:tracking-opens": "yes",
+        "o:tracking-clicks": "yes",
+        "o:tag": f"campaign-{campaign.id}",
+    }
+
     resp = requests.post(
-        f"{MAILGUN_DOMAIN}/v3/{SANDBOX_DOMAIN}/messages",
+        url,
         auth=("api", MAILGUN_API_KEY),
-        data={
-            "from": f"Rajesh Paudel < rajesh@salesmonk.ca >",
-            "to": to_email,
-            "subject": subject,
-            "html": html,
-            "h:Reply-To": reply_to,
-            "h:X-Campaign-ID": campaign_id,  
-            "h:X-Recipient-ID": recipient_id ,
-            "h:X-User-Email":reply_to,
-            
-        },
-     
-        timeout=10
+        data=data,
+        timeout=15,
     )
-    
-    return resp.json() if resp.status_code == 200 else {"error": resp.text}
+
+    if resp.status_code != 200:
+        raise Exception(resp.text)
+
+    return resp.json()
 
 
 @shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=5, retry_backoff_max=300, retry_jitter=True, max_retries=5)
-def send_campaign_task(self, campaign_id: str,token):
+def send_campaign_task(self, campaign_id: str,token,user_info):
    
     try:
         campaign = Campaign.objects.get(pk=campaign_id)
@@ -106,7 +137,7 @@ def send_campaign_task(self, campaign_id: str,token):
 
 
     if not settings.MAILGUN_API_KEY or not settings.MAILGUN_DOMAIN:
-        logger.error("MAILGUN_API_KEY or MAILGUN_DOMAIN missing; aborting campaign %s", campaign_id)
+        logger.error("MAILGUN config missing; aborting campaign %s", campaign_id)
         return
 
     
@@ -208,74 +239,77 @@ def send_campaign_task(self, campaign_id: str,token):
 
     sent_count = campaign.emails_sent or 0
     failed_count = campaign.emails_failed or 0
-    batch_size = 30
+    batch_size = 50
     
    
-    # Process in batches
     for i in range(0, len(recipients), batch_size):
-        batch = recipients[i:i+batch_size]
-        
-        # Lock recipients
+        batch = recipients[i : i + batch_size]
+
         with transaction.atomic():
-            acquired = CampaignRecipient.objects.filter(pk__in=[r.pk for r in batch], status='pending').update(status='sending')
+            acquired = CampaignRecipient.objects.filter(
+                pk__in=[r.pk for r in batch], status="pending"
+            ).update(status="sending")
+
         if acquired == 0:
             continue
-        
-        for r in batch:
-            try:
-                
-                html = build_html_for_recipient(campaign, r, base_html,token)
-                
-                result = send_email_mailgun(
-                    from_email=campaign.user_email,
-                    from_name=campaign.user.full_name if hasattr(campaign, 'user') else campaign.user_email,
-                    to_email=r.email,
-                    subject=campaign.subject or "Email Campaign",
-                    html=html,
-                    reply_to=campaign.user_email,
-                    campaign_id=str(campaign.id),
-                    recipient_id=str(r.id)
+
+        try:
+            send_mailgun_batch(
+                sender_identity=format_sender_identity(user_info),
+                recipients=batch,
+                subject=campaign.subject or "Email Campaign",
+                html=base_html,
+                reply_to=campaign.user_email,
+                campaign=campaign,
+            )
+
+            now = timezone.now()
+            for r in batch:
+                r.status = "sent"
+                r.email_sent_at = now
+                r.error_message = ""
+
+                CampaignMessage.objects.create(
+                    campaign=campaign,
+                    recipient=r,
+                    provider="mailgun",
+                    status="sent",
                 )
-               
-                # Handle Mailgun response
-                if result.get("id"):
-                    r.status = "sent"
-                    r.email_sent_at = timezone.now()
-                    CampaignMessage.objects.create(
-                        campaign=campaign,
-                        recipient=r,
-                        provider='mailgun',
-                        message_id=result.get("id"),
-                        status='sent'
-                    )
-                    sent_count += 1
-                else:
-                    r.status = "failed"
-                    r.error_message = result.get("error", "Unknown error")
-                    failed_count += 1
-                
-                r.save(update_fields=['status', 'email_sent_at', 'error_message', 'updated_at'])
-            
-            except Exception as e:
+
+            CampaignRecipient.objects.bulk_update(
+                batch, ["status", "email_sent_at", "error_message"]
+            )
+
+            sent_count += len(batch)
+
+        except Exception as e:
+            for r in batch:
                 r.status = "failed"
                 r.error_message = str(e)
-                r.save(update_fields=['status', 'error_message', 'updated_at'])
-                failed_count += 1
-    
-    # Update campaign stats
+
+            CampaignRecipient.objects.bulk_update(batch, ["status", "error_message"])
+            failed_count += len(batch)
+
     campaign.emails_sent = sent_count
     campaign.emails_failed = failed_count
     campaign.total_recipients = campaign.recipients.count()
     campaign.completed_at = timezone.now()
-    
-    if failed_count == 0 and sent_count > 0:
-        campaign.status = 'sent'
-    elif sent_count > 0:
-        campaign.status = 'completed_with_errors'
-    else:
-        campaign.status = 'failed'
-    
-    campaign.save(update_fields=['status', 'emails_sent', 'emails_failed', 'total_recipients', 'completed_at', 'updated_at'])
-    
 
+    if failed_count == 0 and sent_count > 0:
+        campaign.status = "sent"
+    elif sent_count > 0:
+        campaign.status = "completed_with_errors"
+    else:
+        campaign.status = "failed"
+
+    campaign.save(
+        update_fields=[
+            "status",
+            "emails_sent",
+            "emails_failed",
+            "total_recipients",
+            "completed_at",
+            "updated_at",
+        ]
+    )
 
