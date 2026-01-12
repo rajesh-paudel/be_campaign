@@ -28,7 +28,7 @@ from .serializers import (
 # from activity.models import People
 from .utils import (
     SubjectLinePlaceholderHandler, get_recipient_data_for_subject,
-    format_sender_identity, replace_body_placeholders, generate_footer_html,fetchPeopleByTags,
+    format_sender_identity, generate_footer_html,fetchPeopleByTags,fetch_people
 )
 
 from .html_generator import generate_full_email_html
@@ -42,10 +42,6 @@ from django.core.signing import TimestampSigner, BadSignature, SignatureExpired
 
 # Set up logging
 logger = logging.getLogger(__name__)
-
-# Direct Resend API configuration
-RESEND_API_KEY = getattr(settings, 'RESEND_API_KEY', None)
-RESEND_FROM_EMAIL = getattr(settings, 'RESEND_FROM_EMAIL', 'noreply@yourdomain.com')
 
 
 class CampaignListPagination(PageNumberPagination):
@@ -215,25 +211,25 @@ class CampaignViewSet(ModelViewSet):
         validated_data = serializer.validated_data
         
         # Rebuild recipients from tags every launch
-        # tag_ids = campaign.tags
-        # if tag_ids:
+        tag_ids = campaign.tags
+        if tag_ids:
             
-        #     tagged_people = fetchPeopleByTags(tag_ids,request.auth_token)
-        #     for person in tagged_people:
-        #         # Skip if person has no email
-        #         if not person.email or not person.email.strip():
-        #             continue
+            tagged_people = fetchPeopleByTags(tag_ids,request.auth_token)
+            for person in tagged_people:
+                # Skip if person has no email
+                if not person.email or not person.email.strip():
+                    continue
                     
-        #         if not CampaignRecipient.objects.filter(campaign=campaign, person=person).exists():
-        #             CampaignRecipient.objects.create(
-        #                 campaign=campaign,
-        #                 person=person,
-        #                 email=person.email,
-        #                 first_name=person.first_name or '',
-        #                 last_name=person.last_name or '',
-        #                 phone=person.phone or '',
-        #                 status='pending'
-        #             )
+                if not CampaignRecipient.objects.filter(campaign=campaign, person_id=person.id).exists():
+                    CampaignRecipient.objects.create(
+                        campaign=campaign,
+                        person=person,
+                        email=person.email,
+                        first_name=person.first_name or '',
+                        last_name=person.last_name or '',
+                        phone=person.phone or '',
+                        status='pending'
+                    )
 
         # Check if we have any recipients after rebuilding
         recipient_count = campaign.recipients.count()
@@ -630,56 +626,52 @@ class UserEmailFooterSettingsView(generics.RetrieveUpdateAPIView):
         return footer_settings
 
 
-# class DebugView(generics.GenericAPIView):
-#     """Debug endpoint to check data"""
-#     permission_classes = []  # Allow access without authentication for debugging
-    
-#     def get(self, request):
-#         # Check Resend API configuration
-#         resend_configured = bool(RESEND_API_KEY)
+MAILGUN_API_KEY=settings.MAILGUN_API_KEY or None
+class DebugView(generics.GenericAPIView):
+    """Debug endpoint to check data"""
+    permission_classes = []  # Allow access without authentication for debugging
+   
+    def get(self, request):
+        # Check Resend API configuration
+        mailgun_configured = bool(MAILGUN_API_KEY)
         
-#         # Basic system info
-#         debug_info = {
-#             'resend_configured': resend_configured,
-#             'resend_from_email': RESEND_FROM_EMAIL,
-#             'django_debug': settings.DEBUG,
-#             'system_status': 'OK'
-#         }
+        # Basic system info
+        debug_info = {
+            'mailgun_configured': mailgun_configured,
+            'django_debug': settings.DEBUG,
+            'system_status': 'OK'
+        }
+
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.split("Bearer ")[1]
+            user_info = validate_token(token)
+            user_email=user_info.get('email')
+
+            people=fetch_people(token)
+            total_people = len(people)
+            people_with_email = len([p for p in people if p.get("email")])
+            sample_people = people[:5]
+             # Count campaigns
+            campaigns_count = Campaign.objects.filter(user_email=user_email,).count()
+            debug_info.update({
+                
+                'user_id': user_info.get('id'),
+                'user_email': user_info.get('email'),
+                'counts': {
+                    'people': total_people,
+                    'people_with_email': people_with_email,
+                    'campaigns': campaigns_count,
+                },
+                'samples': {
+                    'people': sample_people,
+                }
+            })
+       
+        else:
+            debug_info.update({
+                'user_status': 'Not authenticated',
+                'note': 'Authenticate to see user-specific debug info'
+            })
         
-#         # If user is authenticated, provide user-specific debug info
-#         if request.user and request.user.is_authenticated:
-#             user = request.user
-            
-#             # Count people
-#             people_count = People.objects.filter(user=user).count()
-#             people_with_email = People.objects.filter(user=user).exclude(
-#                 email__isnull=True
-#             ).exclude(email='').count()
-            
-#             # Count campaigns
-#             campaigns_count = Campaign.objects.filter(user=user).count()
-            
-#             # Sample people
-#             sample_people = People.objects.filter(user=user).exclude(
-#                 email__isnull=True
-#             ).exclude(email='')[:5].values('id', 'first_name', 'last_name', 'email')
-            
-#             debug_info.update({
-#                 'user_id': user.id,
-#                 'user_email': user.email,
-#                 'counts': {
-#                     'people': people_count,
-#                     'people_with_email': people_with_email,
-#                     'campaigns': campaigns_count,
-#                 },
-#                 'samples': {
-#                     'people': list(sample_people),
-#                 }
-#             })
-#         else:
-#             debug_info.update({
-#                 'user_status': 'Not authenticated',
-#                 'note': 'Authenticate to see user-specific debug info'
-#             })
-        
-#         return Response(debug_info)
+        return Response(debug_info)

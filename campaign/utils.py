@@ -200,9 +200,11 @@ def format_sender_identity(user) -> str:
     Returns:
         Formatted sender string like 'Vishal Dhakal <vishal@salesmonk.ca>'
     """
+    
     # Get user's first name and last name
-    first_name = user.first_name or ''
-    last_name = user.last_name or ''
+    first_name = user.get("first_name", "") if isinstance(user, dict) else getattr(user, "first_name", "")
+    last_name = user.get("last_name", "") if isinstance(user, dict) else getattr(user, "last_name", "")
+    username = user.get("username", "") if isinstance(user, dict) else getattr(user, "username", "")
     
     # Create full name from first and last name for display
     if first_name and last_name:
@@ -211,8 +213,8 @@ def format_sender_identity(user) -> str:
         name = first_name
     elif last_name:
         name = last_name
-    elif user.username:
-        name = user.username
+    elif username:
+        name = username
     else:
         name = 'Sender'
     
@@ -220,14 +222,15 @@ def format_sender_identity(user) -> str:
     if first_name:
         # Remove any spaces and convert to lowercase
         email_prefix = first_name.strip().replace(' ', '').lower()
-    elif user.username:
-        email_prefix = user.username.strip().replace(' ', '').lower()
+    elif username:
+        email_prefix = username.strip().replace(' ', '').lower()
     else:
         email_prefix = 'noreply'
     
     email = f"{email_prefix}@salesmonk.ca"
     
     # Format as 'First Name Last Name <email>'
+    
     return f"{name} <{email}>"
 
 
@@ -280,75 +283,52 @@ _SINGLE_BRACE_PATTERN = re.compile(
     re.IGNORECASE
 )
 
-def replace_body_placeholders(html_content: str, recipient_data: Dict[str, Optional[str]], unsubscribe_url: Optional[str] = None) -> str:
+
+def replace_body_placeholders_for_mailgun(
+    html_content: str,
+    
+) -> str:
     """
-    Replace merge tags in HTML body with recipient data.
-    
-    Supports both {{placeholder}} and {placeholder} formats (case-insensitive).
-    Supported placeholders:
-    - first_name, last_name, full_name
-    - email
-    - company_name, business_name
-    - unsubscribe_url (if provided)
-    
+    Replace placeholders in HTML body with Mailgun recipient variables.
+
+    Converts:
+      {{first_name}} / {first_name}  ->  %recipient.first_name%
+      {{last_name}} / {last_name}    ->  %recipient.last_name%
+      {{full_name}}                  ->  %recipient.full_name%
+      {{email}}                      ->  %recipient.email%
+      {{unsubscribe_url}}            ->  %recipient.unsubscribe_url%
+      {{company_name}} / {{business_name}} -> %recipient.company_name%
+
     Args:
         html_content: HTML content with placeholders
-        recipient_data: Dictionary containing recipient information
-        unsubscribe_url: Optional unsubscribe URL for this recipient
-        
+        recipient_data: dictionary (used only to know which keys to replace)
+        unsubscribe_url: optional (Mailgun uses %recipient.unsubscribe_url%)
+
     Returns:
-        HTML content with placeholders replaced by actual values
+        HTML content with placeholders replaced with Mailgun merge tags
     """
     if not html_content:
         return ""
 
     content = str(html_content)
 
-    # Build replacement dict with safe fallbacks
-    first_name = (recipient_data.get("first_name") or "").strip()
-    last_name = (recipient_data.get("last_name") or "").strip()
-    email = (recipient_data.get("email") or "").strip()
-    company_name = (
-        recipient_data.get("business_name")
-        or recipient_data.get("company_name")
-        or ""
-    ).strip()
+    # Supported placeholders
+    placeholder_keys = [
+        "first_name",
+        "last_name",
+        "full_name",
+        "email",
+        "company_name",
+        "business_name",
+        "unsubscribe_url",
+    ]
 
-    # Build full name from first and last name
-    full_name = f"{first_name} {last_name}".strip()
-    if not full_name:
-        full_name = email or "there"
-
-    # Case-insensitive replacement map
-    replacements: Dict[str, str] = {
-        "first_name": first_name or "there",
-        "last_name": last_name or "",
-        "full_name": full_name,
-        "email": email or "",
-        "company_name": company_name or "",
-        "business_name": company_name or "",
-        "unsubscribe_url": unsubscribe_url or "",
-    }
-
-    def _replace(match: re.Match) -> str:
-        """Replace matched placeholder with actual value"""
-        key = match.group(1).lower()
-        value = replacements.get(key, "")
-        
-        # Don't escape unsubscribe_url as it's already a valid URL
-        if key == "unsubscribe_url":
-            return value
-        
-        # Escape other values to avoid breaking HTML if values contain special chars
-        return escape(value)
-
-    # Two-pass replacement: double braces first, then single braces
-    # This prevents {{placeholder}} from being partially replaced
-    content = _DOUBLE_BRACE_PATTERN.sub(_replace, content)
-    content = _SINGLE_BRACE_PATTERN.sub(_replace, content)
+    # Replace all {{key}} or {key} with %recipient.key%
+    for key in placeholder_keys:
+        pattern = re.compile(rf"\{{{{\s*{key}\s*}}}}|\{{\s*{key}\s*}}", re.IGNORECASE)
+        content = pattern.sub(f"%recipient.{key}%", content)
 
     return content
-
 
 def generate_footer_html(footer_settings) -> str:
     """
@@ -405,6 +385,7 @@ def validate_token(token: str):
         response = requests.get(url, headers=headers, timeout=5)
         response.raise_for_status()  # raises HTTPError for 4xx/5xx
         data = response.json()
+        
         # optionally check required fields
         if "id" in data:
             return data
@@ -428,6 +409,17 @@ def fetch_person(person_id,token:str):
         }
     except requests.RequestException:
         return {}    
+    
+def fetch_people(token:str):
+    try:
+        headers = {"Authorization": f"Bearer {token}"}
+        response = requests.get(f"{settings.BE_CRM_API}people/",headers=headers, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        return data.get("results", [])
+    except requests.RequestException:
+        print(f"Error fetching people: {e}")
+        return []   
     
 
 def fetchPeopleByTags(tag_ids,token:str):  

@@ -13,56 +13,13 @@ from .html_generator import generate_full_email_html
 from .utils import (
     SubjectLinePlaceholderHandler,
     get_recipient_data_for_subject,
-    replace_body_placeholders,
     format_sender_identity,
     fetch_person,
+    replace_body_placeholders_for_mailgun,
 )
 
 logger = logging.getLogger(__name__)
 
-
-def build_html_for_recipient(campaign: Campaign, recipient: CampaignRecipient, base_html: str,token) -> str:
-    """
-    Build personalized HTML for a specific recipient using cached base HTML.
-    Replaces dynamic placeholders (name, email, unsubscribe link) efficiently.
-    
-    Args:
-        campaign: Campaign instance
-        recipient: Recipient instance
-        base_html: Pre-generated base HTML (required for performance)
-    
-    Returns:
-        Personalized HTML ready to send
-    """
-   
-    # Validate base_html
-    if not base_html or len(base_html.strip()) < 50:
-        return ""
-    
-    # Get recipient data for placeholder replacement
-    recipient_data = get_recipient_data_for_subject(recipient,token)
-   
-   # Use recipient.email if present, otherwise fall back to recipient_data['email']
-    email_to_use = recipient.email or recipient_data.get('email', '')
-
-    # Generate unique unsubscribe URL for this recipient
-    try:
-        from django.core.signing import TimestampSigner
-        signer = TimestampSigner()
-        token = signer.sign(f"{campaign.user_email}:{email_to_use}")
-        fe_base = getattr(settings, 'FRONTEND_BASE_URL', 'https://salesmonk.ca').rstrip('/')
-        unsub_url = f"{fe_base}/unsubscribe?t={token}"
-    except Exception:
-        unsub_url = ""
-    
-    # Single-pass replacement of all placeholders including unsubscribe_url
-    html_message = replace_body_placeholders(base_html, recipient_data, unsub_url)
-    
-    # Ensure we return valid HTML
-    if not html_message or len(html_message.strip()) < 50:
-        return ""
-    
-    return html_message
 
 
 
@@ -70,6 +27,8 @@ def send_mailgun_batch(sender_identity:str, recipients:List[CampaignRecipient], 
     """
     Send a single email via Mailgun.
     """
+    
+    
     MAILGUN_DOMAIN = settings.MAILGUN_DOMAIN
     SANDBOX_DOMAIN = settings.SANDBOX_DOMAIN
     MAILGUN_API_KEY = settings.MAILGUN_API_KEY
@@ -88,23 +47,26 @@ def send_mailgun_batch(sender_identity:str, recipients:List[CampaignRecipient], 
 
         token = signer.sign(f"{campaign.user_email}:{r.email}")
         unsubscribe_url = f"{fe_base}/unsubscribe?t={token}"
-
+        html_message=replace_body_placeholders_for_mailgun(html)
         recipient_vars[r.email] = {
             "first_name": r.first_name or "",
             "last_name": r.last_name or "",
-            "recipient_id": str(r.id),
-            "campaign_id": str(campaign.id),
+            "full_name":r.full_name or "",
+            "email":r.email or "",
+           
             "unsubscribe_url": unsubscribe_url,
         }
+       
+        return 
 
     if not to_emails:
         raise Exception("No valid recipient emails in batch")
-
+    
     data = {
         "from": sender_identity,
         "to": to_emails,
         "subject": subject,
-        "html": html,
+        "html": html_message,
         "h:Reply-To": reply_to,
         "recipient-variables": json.dumps(recipient_vars),
         "o:tracking": "yes",
@@ -122,7 +84,7 @@ def send_mailgun_batch(sender_identity:str, recipients:List[CampaignRecipient], 
 
     if resp.status_code != 200:
         raise Exception(resp.text)
-
+    
     return resp.json()
 
 
@@ -241,10 +203,10 @@ def send_campaign_task(self, campaign_id: str,token,user_info):
     failed_count = campaign.emails_failed or 0
     batch_size = 50
     
-   
+    
     for i in range(0, len(recipients), batch_size):
         batch = recipients[i : i + batch_size]
-
+        
         with transaction.atomic():
             acquired = CampaignRecipient.objects.filter(
                 pk__in=[r.pk for r in batch], status="pending"
@@ -254,8 +216,12 @@ def send_campaign_task(self, campaign_id: str,token,user_info):
             continue
 
         try:
-            send_mailgun_batch(
-                sender_identity=format_sender_identity(user_info),
+           
+            sender_identity=format_sender_identity(user_info),
+            
+            
+            resp_data=send_mailgun_batch(
+                sender_identity=sender_identity,
                 recipients=batch,
                 subject=campaign.subject or "Email Campaign",
                 html=base_html,
